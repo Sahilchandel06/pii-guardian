@@ -1,0 +1,16 @@
+fastapi
+uvicorn
+sqlalchemy
+psycopg2-binary
+python-jose
+passlib
+pydantic
+python-multipart
+presidio-analyzer
+presidio-anonymizer
+spacy
+pdfplumber
+python-docx
+pytesseract
+Pillow
+cryptography
