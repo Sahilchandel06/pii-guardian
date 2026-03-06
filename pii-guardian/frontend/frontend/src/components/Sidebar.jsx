@@ -1,7 +1,9 @@
 const items = [
   { id: "overview", label: "Overview" },
+  { id: "risk", label: "Risk Dashboard" },
   { id: "files", label: "Files" },
-  { id: "upload", label: "Upload", adminOnly: true },
+  { id: "sanitized", label: "Sanitized Data" },
+  { id: "upload", label: "Upload" },
   { id: "users", label: "Users", adminOnly: true },
   { id: "audit", label: "Audit", adminOnly: true },
 ];

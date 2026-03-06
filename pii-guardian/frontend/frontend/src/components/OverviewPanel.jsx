@@ -1,7 +1,7 @@
 export default function OverviewPanel({ me, files, logs }) {
   const totalFiles = files.length;
   const totalPII = files.reduce((sum, item) => sum + (item.pii_count || 0), 0);
-  const recentLogs = logs.slice(0, 6);
+  const isAdmin = me?.role === "admin";
 
   return (
     <section className="panel">
@@ -21,15 +21,26 @@ export default function OverviewPanel({ me, files, logs }) {
         </article>
       </div>
 
-      <h4>Latest Activity</h4>
+      <h4>Data Access Scope</h4>
       <div className="activity-list">
-        {recentLogs.length === 0 && <p>No activity yet.</p>}
-        {recentLogs.map((log) => (
-          <div key={log.id} className="activity-item">
-            <strong>{log.action}</strong>
-            <p>{log.details}</p>
+        {isAdmin ? (
+          <div className="activity-item">
+            <strong>Admin Access</strong>
+            <p>You can access all uploaded files (original + sanitized).</p>
           </div>
-        ))}
+        ) : (
+          <div className="activity-item">
+            <strong>User Access</strong>
+            <p>
+              You can access only your own uploaded files (original +
+              sanitized). Other users' files are blocked.
+            </p>
+          </div>
+        )}
+        <div className="activity-item">
+          <strong>Visible Files</strong>
+          <p>One user can see all other user's sanitized files.</p>
+        </div>
       </div>
     </section>
   );

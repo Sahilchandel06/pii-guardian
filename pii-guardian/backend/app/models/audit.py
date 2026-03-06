@@ -13,3 +13,5 @@ class AuditLog(Base):
     action = Column(String(120), nullable=False, index=True)
     details = Column(Text, nullable=True)
     timestamp = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    prev_hash = Column(String(64), nullable=True)
+    log_hash = Column(String(64), nullable=True, index=True)

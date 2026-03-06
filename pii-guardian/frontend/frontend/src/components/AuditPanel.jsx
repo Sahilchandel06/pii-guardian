@@ -1,7 +1,44 @@
-export default function AuditPanel({ logs }) {
+import { useState } from "react";
+
+import { apiRequest } from "../lib/api";
+
+export default function AuditPanel({ logs, token, setNotice, setError }) {
+  const [downloading, setDownloading] = useState(false);
+
+  const downloadLogs = async () => {
+    try {
+      setDownloading(true);
+      setError("");
+      const response = await apiRequest("/audit/logs/download?format=csv", { token });
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const contentDisposition = response.headers.get("Content-Disposition") || "";
+      const match = contentDisposition.match(/filename=\"?([^\";]+)\"?/i);
+      const filename = match?.[1] || "audit_logs.csv";
+
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      setNotice("Audit logs downloaded.");
+    } catch (err) {
+      setError(err.message || "Failed to download audit logs.");
+    } finally {
+      setDownloading(false);
+    }
+  };
+
   return (
     <section className="panel">
-      <h3>Audit Logs</h3>
+      <div className="audit-head">
+        <h3>Audit Logs</h3>
+        <button type="button" onClick={downloadLogs} disabled={downloading}>
+          {downloading ? "Downloading..." : "Download Logs"}
+        </button>
+      </div>
       <div className="table-wrap">
         <table>
           <thead>

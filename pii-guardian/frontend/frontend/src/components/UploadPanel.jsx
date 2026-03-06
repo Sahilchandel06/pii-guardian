@@ -1,7 +1,12 @@
 import { useState } from "react";
 import { apiRequest } from "../lib/api";
 
-export default function UploadPanel({ token, onUploaded, setNotice, setError }) {
+export default function UploadPanel({
+  token,
+  onUploaded,
+  setNotice,
+  setError,
+}) {
   const [mode, setMode] = useState("mask");
   const [file, setFile] = useState(null);
   const isPdf = (file?.name || "").toLowerCase().endsWith(".pdf");
@@ -35,7 +40,7 @@ export default function UploadPanel({ token, onUploaded, setNotice, setError }) 
         body: payload,
       });
       const data = await response.json();
-      setNotice(`Processed ${data.filename}. PII found: ${data.pii_count}`);
+      setNotice(`Processed ${data.filename}`);
       setFile(null);
       onUploaded();
     } catch (err) {
@@ -45,8 +50,11 @@ export default function UploadPanel({ token, onUploaded, setNotice, setError }) 
 
   return (
     <section className="panel">
-      <h3>Admin Upload Center</h3>
-      <p>Supported formats: SQL, CSV, JSON, PDF (including image-based), DOCX, TXT, PNG, JPG, JPEG, XLSX, XLSM, XLTX, XLTM, XLS</p>
+      <h3>Upload Center</h3>
+      <p>
+        Supported formats: SQL, CSV, JSON, PDF (including image-based), DOCX,
+        TXT, PNG, JPG, JPEG, XLSX, XLSM, XLTX, XLTM, XLS
+      </p>
       <form className="upload-grid" onSubmit={onSubmit}>
         <input type="file" onChange={onFileChange} required />
         {isPdf ? (
@@ -54,7 +62,10 @@ export default function UploadPanel({ token, onUploaded, setNotice, setError }) 
             <option value="redact">Redact (PDF required)</option>
           </select>
         ) : (
-          <select value={mode} onChange={(event) => setMode(event.target.value)}>
+          <select
+            value={mode}
+            onChange={(event) => setMode(event.target.value)}
+          >
             <option value="mask">Mask</option>
             <option value="redact">Redact</option>
             <option value="tokenize">Tokenize</option>

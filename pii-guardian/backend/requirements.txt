@@ -11,7 +11,8 @@ presidio-anonymizer
 spacy
 pdfplumber
 python-docx
-pytesseract
+paddleocr
+paddlepaddle
 Pillow
 cryptography
 openpyxl
@@ -20,6 +21,7 @@ xlwt
 PyMuPDF
 python-dotenv
 opencv-python
+pyzbar
 openai
 transformers
 torch

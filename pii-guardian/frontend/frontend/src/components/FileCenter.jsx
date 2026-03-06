@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { apiRequest } from "../lib/api";
 
-export default function FileCenter({ token, files, isAdmin, setNotice, setError }) {
+export default function FileCenter({ token, files, isAdmin, reloadFiles, onDeleted, setNotice, setError }) {
   const [search, setSearch] = useState("");
   const [searchResults, setSearchResults] = useState([]);
   const [rawPreview, setRawPreview] = useState("");
@@ -17,7 +17,10 @@ export default function FileCenter({ token, files, isAdmin, setNotice, setError 
       const response = await apiRequest(endpoint, { token });
       const data = await response.json();
       if (raw) setRawPreview(data.raw_preview);
-      else setSanitizedPreview(data.sanitized_preview);
+      else {
+        setSanitizedPreview(data.sanitized_preview);
+        if (reloadFiles) await reloadFiles();
+      }
     } catch (err) {
       setError(err.message);
     }
@@ -28,7 +31,13 @@ export default function FileCenter({ token, files, isAdmin, setNotice, setError 
     setError("");
     try {
       const endpoint = original ? `/files/${fileId}/download-original` : `/files/${fileId}/download`;
-      const response = await apiRequest(endpoint, { token });
+      const headers = {};
+      if (original) {
+        const stepupPassword = window.prompt("Enter your password to confirm original file download:");
+        if (!stepupPassword) return;
+        headers["X-Stepup-Password"] = stepupPassword;
+      }
+      const response = await apiRequest(endpoint, { token, headers });
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
@@ -40,6 +49,7 @@ export default function FileCenter({ token, files, isAdmin, setNotice, setError 
       link.click();
       URL.revokeObjectURL(url);
       setNotice("Download started.");
+      if (!original && reloadFiles) await reloadFiles();
     } catch (err) {
       setError(err.message);
     }
@@ -64,6 +74,7 @@ export default function FileCenter({ token, files, isAdmin, setNotice, setError 
       link.click();
       URL.revokeObjectURL(url);
       setNotice("Sanitized original-format download started.");
+      if (reloadFiles) await reloadFiles();
     } catch (err) {
       setError(err.message);
     }
@@ -80,6 +91,23 @@ export default function FileCenter({ token, files, isAdmin, setNotice, setError 
       const response = await apiRequest(`/files/search?q=${encodeURIComponent(search.trim())}`, { token });
       const data = await response.json();
       setSearchResults(data.results || []);
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const deleteFile = async (fileId, filename) => {
+    setNotice("");
+    setError("");
+    const confirmed = window.confirm(`Delete "${filename}" permanently? This cannot be undone.`);
+    if (!confirmed) return;
+    try {
+      await apiRequest(`/files/${fileId}`, { token, method: "DELETE" });
+      setNotice(`Deleted ${filename}`);
+      if (onDeleted) await onDeleted();
+      setRawPreview("");
+      setSanitizedPreview("");
+      setSearchResults((prev) => prev.filter((item) => item.id !== fileId));
     } catch (err) {
       setError(err.message);
     }
@@ -115,8 +143,9 @@ export default function FileCenter({ token, files, isAdmin, setNotice, setError 
                   <button onClick={() => loadPreview(item.id, false)}>Sanitized</button>
                   <button onClick={() => downloadSanitizedOriginal(item.id, item.filename)}>Download Safe (Original)</button>
                   <button onClick={() => download(item.id, item.filename, false)}>Download Safe (TXT)</button>
-                  {isAdmin && <button onClick={() => loadPreview(item.id, true)}>Raw</button>}
-                  {isAdmin && <button onClick={() => download(item.id, item.filename, true)}>Download Raw</button>}
+                  <button onClick={() => loadPreview(item.id, true)}>Original Preview</button>
+                  <button onClick={() => download(item.id, item.filename, true)}>Download Original</button>
+                  {isAdmin && <button onClick={() => deleteFile(item.id, item.filename)}>Delete</button>}
                 </td>
               </tr>
             ))}
@@ -137,12 +166,10 @@ export default function FileCenter({ token, files, isAdmin, setNotice, setError 
       )}
 
       <div className="compare-grid">
-        {isAdmin && (
-          <div>
-            <h4>Original Preview (Admin)</h4>
-            <textarea readOnly rows={12} value={rawPreview} />
-          </div>
-        )}
+        <div>
+          <h4>Original Preview</h4>
+          <textarea readOnly rows={12} value={rawPreview} />
+        </div>
         <div>
           <h4>Sanitized Preview</h4>
           <textarea readOnly rows={12} value={sanitizedPreview} />

@@ -60,6 +60,32 @@ def _mask_value(entity_type: str, value: str) -> str:
             return f"{digits[:2]}{'*' * (len(digits) - 4)}{digits[-2:]}"
         return "[MASKED_ACCOUNT]"
 
+    if entity_type == "IFSC_CODE":
+        value = value.strip().upper()
+        if len(value) == 11:
+            return f"{value[:4]}0******"
+        return "[MASKED_IFSC]"
+
+    if entity_type == "PASSPORT_NUMBER":
+        value = value.strip().upper()
+        if len(value) == 8:
+            return f"{value[0]}******{value[-1]}"
+        return "[MASKED_PASSPORT]"
+
+    if entity_type in {"DEVICE_ID", "FINGERPRINT_TEMPLATE", "FACE_TEMPLATE"}:
+        if len(value) <= 8:
+            return "[MASKED_ID]"
+        return f"{value[:4]}***{value[-3:]}"
+
+    if entity_type == "BANK_NAME":
+        return "[REDACTED_BANK]"
+
+    if entity_type == "CREDIT_CARD":
+        digits = re.sub(r"\D", "", value)
+        if len(digits) >= 10:
+            return f"{digits[:6]}{'*' * (len(digits) - 10)}{digits[-4:]}"
+        return "[MASKED_CARD]"
+
     # Mask UPI_ID: show first char of username, mask domain
     if entity_type == "UPI_ID" and "@" in value:
         username, domain = value.split("@", 1)

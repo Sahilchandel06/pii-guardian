@@ -1,4 +1,5 @@
 import os
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
@@ -21,6 +22,8 @@ from app.utils.security import (
 )
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
+MAX_LOGIN_ATTEMPTS = int(os.getenv("MAX_LOGIN_ATTEMPTS", "5"))
+LOGIN_LOCK_MINUTES = int(os.getenv("LOGIN_LOCK_MINUTES", "15"))
 
 
 @router.post("/signup")
@@ -63,8 +66,48 @@ def login(data: LoginRequest, db: Session = Depends(get_db)):
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid username or password")
 
+    now = datetime.utcnow()
+    if user.locked_until and user.locked_until > now:
+        write_audit_log(
+            db,
+            user.id,
+            "LOGIN_BLOCKED",
+            f"Account locked until {user.locked_until.isoformat()}",
+        )
+        raise HTTPException(
+            status_code=status.HTTP_423_LOCKED,
+            detail=f"Account temporarily locked. Try again after {user.locked_until.isoformat()} UTC",
+        )
+
     if not verify_password(data.password, user.password_hash):
+        user.failed_login_attempts = (user.failed_login_attempts or 0) + 1
+        if user.failed_login_attempts >= MAX_LOGIN_ATTEMPTS:
+            user.locked_until = now + timedelta(minutes=LOGIN_LOCK_MINUTES)
+            user.failed_login_attempts = 0
+            db.commit()
+            write_audit_log(
+                db,
+                user.id,
+                "LOGIN_LOCKOUT",
+                f"Too many failed logins. Locked until {user.locked_until.isoformat()}",
+            )
+            raise HTTPException(
+                status_code=status.HTTP_423_LOCKED,
+                detail=f"Account temporarily locked. Try again after {user.locked_until.isoformat()} UTC",
+            )
+        db.commit()
+        write_audit_log(
+            db,
+            user.id,
+            "LOGIN_FAIL",
+            f"Invalid password attempt count={user.failed_login_attempts}",
+        )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid username or password")
+
+    # Reset lockout state on successful login.
+    user.failed_login_attempts = 0
+    user.locked_until = None
+    db.commit()
 
     token = create_access_token({"user_id": user.id, "role": user.role})
     write_audit_log(db, user.id, "LOGIN", f"User {user.username} logged in")
