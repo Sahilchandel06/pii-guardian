@@ -4,12 +4,13 @@ import { apiRequest } from "../lib/api";
 
 export default function AuditPanel({ logs, token, setNotice, setError }) {
   const [downloading, setDownloading] = useState(false);
+  const [downloadFormat, setDownloadFormat] = useState("jsonl");
 
   const downloadLogs = async () => {
     try {
       setDownloading(true);
       setError("");
-      const response = await apiRequest("/audit/logs/download?format=csv", { token });
+      const response = await apiRequest(`/audit/logs/download?format=${encodeURIComponent(downloadFormat)}`, { token });
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);
       const contentDisposition = response.headers.get("Content-Disposition") || "";
@@ -35,9 +36,20 @@ export default function AuditPanel({ logs, token, setNotice, setError }) {
     <section className="panel">
       <div className="audit-head">
         <h3>Audit Logs</h3>
-        <button type="button" onClick={downloadLogs} disabled={downloading}>
+        <div style={{ display: "flex", gap: 8 }}>
+          <select
+            value={downloadFormat}
+            onChange={(event) => setDownloadFormat(event.target.value)}
+            disabled={downloading}
+          >
+            <option value="jsonl">JSONL (SIEM)</option>
+            <option value="csv">CSV</option>
+            <option value="json">JSON</option>
+          </select>
+          <button type="button" onClick={downloadLogs} disabled={downloading}>
           {downloading ? "Downloading..." : "Download Logs"}
-        </button>
+          </button>
+        </div>
       </div>
       <div className="table-wrap">
         <table>

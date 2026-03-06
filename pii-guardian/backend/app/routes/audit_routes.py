@@ -69,7 +69,7 @@ def verify_audit_integrity(
 
 @router.get("/logs/download")
 def download_audit_logs(
-    format: str = Query("csv", pattern="^(csv|json)$"),
+    format: str = Query("csv", pattern="^(csv|json|jsonl)$"),
     admin_user: User = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
@@ -92,6 +92,26 @@ def download_audit_logs(
         data = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
         filename = f"audit_logs_{timestamp}.json"
         media_type = "application/json"
+    elif format == "jsonl":
+        lines = []
+        for log in logs:
+            lines.append(
+                json.dumps(
+                    {
+                        "id": log.id,
+                        "user_id": log.user_id,
+                        "action": log.action,
+                        "details": log.details,
+                        "timestamp": log.timestamp.isoformat(),
+                        "prev_hash": log.prev_hash,
+                        "log_hash": log.log_hash,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        data = ("\n".join(lines) + ("\n" if lines else "")).encode("utf-8")
+        filename = f"audit_logs_{timestamp}.jsonl"
+        media_type = "application/x-ndjson"
     else:
         import csv
 
