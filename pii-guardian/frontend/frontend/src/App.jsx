@@ -124,28 +124,30 @@ export default function App() {
           <p>Upload, detect PII, sanitize, audit and download secure outputs.</p>
         </header>
 
-        {notice && <div className="notice success">{notice}</div>}
-        {error && <div className="notice error">{error}</div>}
+        {notice && <div className="notice success" key={notice}>{notice}</div>}
+        {error && <div className="notice error" key={error}>{error}</div>}
 
-        {activeTab === "overview" && <OverviewPanel me={me} files={files} logs={logs} />}
-        {activeTab === "files" && (
-          <FileCenter token={token} files={files} isAdmin={isAdmin} setNotice={setNotice} setError={setError} />
-        )}
-        {activeTab === "upload" && isAdmin && (
-          <UploadPanel
-            token={token}
-            onUploaded={async () => {
-              await fetchFiles();
-              await fetchLogs();
-            }}
-            setNotice={setNotice}
-            setError={setError}
-          />
-        )}
-        {activeTab === "users" && isAdmin && (
-          <UsersPanel token={token} users={users} reloadUsers={fetchUsers} setNotice={setNotice} setError={setError} />
-        )}
-        {activeTab === "audit" && isAdmin && <AuditPanel logs={logs} />}
+        <div className="panel-fade" key={activeTab}>
+          {activeTab === "overview" && <OverviewPanel me={me} files={files} logs={logs} />}
+          {activeTab === "files" && (
+            <FileCenter token={token} files={files} isAdmin={isAdmin} setNotice={setNotice} setError={setError} />
+          )}
+          {activeTab === "upload" && isAdmin && (
+            <UploadPanel
+              token={token}
+              onUploaded={async () => {
+                await fetchFiles();
+                await fetchLogs();
+              }}
+              setNotice={setNotice}
+              setError={setError}
+            />
+          )}
+          {activeTab === "users" && isAdmin && (
+            <UsersPanel token={token} users={users} reloadUsers={fetchUsers} setNotice={setNotice} setError={setError} />
+          )}
+          {activeTab === "audit" && isAdmin && <AuditPanel logs={logs} />}
+        </div>
       </main>
     </div>
   );

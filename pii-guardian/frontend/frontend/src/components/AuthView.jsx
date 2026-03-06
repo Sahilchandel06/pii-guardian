@@ -51,7 +51,7 @@ export default function AuthView({ onLogin }) {
       <div className="auth-card">
         <h1>PII Guardian</h1>
         <p>Secure Sanitization Platform</p>
-        <form onSubmit={submit}>
+        <form onSubmit={submit} key={mode}>
           <input
             placeholder="Username"
             value={form.username}
