@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+pii-guardian/backend/venv/
+pii-guardian/backend/.venv/
+
+# Env secrets
+.env
+*.env
+!.env.example
+
+# Runtime/generated data
+pii-guardian/backend/secure_storage/
+pii-guardian/backend/*.db
+
+# Frontend
+node_modules/
+pii-guardian/frontend/frontend/node_modules/
+pii-guardian/frontend/frontend/dist/
