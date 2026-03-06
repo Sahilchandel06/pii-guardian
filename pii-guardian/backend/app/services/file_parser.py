@@ -136,6 +136,35 @@ def _sanitize_image(image, mode: str):
             y1 = y0 + max(1, word["height"])
             draw.rectangle([x0, y0, x1, y1], fill="black")
 
+    # attempt to detect faces; if found, blackout face regions only
+    try:
+        import cv2
+        import numpy as np
+
+        # convert PIL -> OpenCV BGR
+        cv_img = cv2.cvtColor(np.array(redacted), cv2.COLOR_RGB2BGR)
+        face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+        faces = face_cascade.detectMultiScale(cv_img, scaleFactor=1.1, minNeighbors=5)
+        # filter face boxes by reasonable aspect ratio and location
+        valid_faces = []
+        for (x, y, w, h) in faces:
+            if w == 0 or h == 0:
+                continue
+            ratio = w / h
+            # face roughly square and located in upper half of image
+            if 0.5 < ratio < 1.5 and y < redacted.height * 0.6:
+                valid_faces.append((x, y, w, h))
+        if valid_faces:
+            # choose largest box if multiple
+            x, y, w, h = max(valid_faces, key=lambda b: b[2] * b[3])
+            draw.rectangle([x, y, x + w, y + h], fill="black")
+        else:
+            # fallback: if detection gave nothing sensible, blackout entire image
+            draw.rectangle([0, 0, redacted.width, redacted.height], fill="black")
+    except Exception:
+        # if OpenCV isn't available or detection fails, fall back to full blackout
+        draw.rectangle([0, 0, redacted.width, redacted.height], fill="black")
+
     return redacted, plain_text, sanitized_text, findings
 
 

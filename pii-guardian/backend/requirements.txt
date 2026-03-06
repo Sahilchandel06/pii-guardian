@@ -19,3 +19,9 @@ xlrd
 xlwt
 PyMuPDF
 python-dotenv
+opencv-python
+openai
+transformers
+torch
+langchain
+tqdm

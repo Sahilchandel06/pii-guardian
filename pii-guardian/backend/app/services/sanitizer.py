@@ -39,6 +39,43 @@ def _mask_value(entity_type: str, value: str) -> str:
         if len(parts) == 4:
             return f"{parts[0]}.{parts[1]}.***.***"
 
+    # Mask IN_ADDRESS: partial masking - keep numbers, mask words
+    if entity_type == "IN_ADDRESS":
+        # Split into words, mask alphabetic words longer than 2 chars
+        words = re.findall(r'\b\w+\b', value)
+        masked_words = []
+        for word in words:
+            if word.isdigit():
+                masked_words.append(word)
+            elif len(word) > 2:
+                masked_words.append(f"{word[0]}{'*' * (len(word) - 1)}")
+            else:
+                masked_words.append(word)
+        return " ".join(masked_words)
+
+    # Mask BANK_ACCOUNT: show first and last 2 digits
+    if entity_type == "BANK_ACCOUNT":
+        digits = re.sub(r"\D", "", value)
+        if len(digits) >= 4:
+            return f"{digits[:2]}{'*' * (len(digits) - 4)}{digits[-2:]}"
+        return "[MASKED_ACCOUNT]"
+
+    # Mask UPI_ID: show first char of username, mask domain
+    if entity_type == "UPI_ID" and "@" in value:
+        username, domain = value.split("@", 1)
+        masked_username = f"{username[:1]}{'*' * (len(username) - 1)}" if len(username) > 1 else username
+        return f"{masked_username}@{domain}"
+
+    # Mask PERSON_NAME: show first character, mask rest (e.g., "John Doe" -> "J*** D***")
+    if entity_type == "PERSON_NAME":
+        words = value.split()
+        masked_words = []
+        for word in words:
+            if len(word) <= 1:
+                masked_words.append(word)
+            else:
+                masked_words.append(f"{word[0]}{'*' * (len(word) - 1)}")
+        return " ".join(masked_words)
     if len(value) <= 2:
         return "*" * len(value)
     return f"{value[0]}{'*' * (len(value) - 2)}{value[-1]}"
