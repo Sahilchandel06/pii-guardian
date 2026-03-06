@@ -56,6 +56,8 @@ async def upload_file(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Unsupported format. Allowed: SQL, CSV, JSON, PDF, DOCX, TXT, PNG, JPG, JPEG, XLSX, XLSM, XLTX, XLTM, XLS",
         )
+    ext = Path(file.filename).suffix.lower()
+    effective_mode = "redact" if ext == ".pdf" else mode
 
     raw_bytes = await file.read()
     if not raw_bytes:
@@ -68,7 +70,7 @@ async def upload_file(
     write_audit_log(db, admin_user.id, "FILE_UPLOAD", f"Uploaded file '{file.filename}'")
 
     try:
-        sanitized_payload = sanitize_file_preserving_format(file.filename, raw_bytes, mode=mode)
+        sanitized_payload = sanitize_file_preserving_format(file.filename, raw_bytes, mode=effective_mode)
         sanitized_text = sanitized_payload["sanitized_text"]
         sanitized_original_bytes = sanitized_payload["sanitized_original_bytes"]
         findings = sanitized_payload["findings"]
@@ -99,7 +101,7 @@ async def upload_file(
         original_path=str(original_path),
         sanitized_path=str(sanitized_path),
         uploaded_by=admin_user.id,
-        sanitization_mode=mode,
+        sanitization_mode=effective_mode,
         pii_count=len(findings),
         detection_summary=json.dumps(summary),
     )
@@ -111,14 +113,14 @@ async def upload_file(
         db,
         admin_user.id,
         "FILE_SANITIZED",
-        f"file_id={file_record.id} parser={parser} mode={mode}",
+        f"file_id={file_record.id} parser={parser} mode={effective_mode}",
     )
 
     return {
         "message": "File uploaded and sanitized successfully",
         "file_id": file_record.id,
         "filename": file_record.filename,
-        "sanitization_mode": mode,
+        "sanitization_mode": effective_mode,
         "pii_count": file_record.pii_count,
         "entities": summary,
         "sanitized_downloads": {

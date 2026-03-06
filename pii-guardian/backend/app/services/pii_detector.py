@@ -55,10 +55,27 @@ FALLBACK_PATTERNS = {
     "PHONE_NUMBER": re.compile(r"\b(?:\+91[-\s]?)?[6-9]\d{9}\b"),
     "IP_ADDRESS": re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"),
     "IN_PAN": re.compile(r"\b[A-Z]{5}[0-9]{4}[A-Z]\b"),
-    "IN_AADHAAR": re.compile(r"\b\d{4}\s?\d{4}\s?\d{4}\b"),
+    # Aadhaar and VID with ASCII/Devanagari/Gujarati digits.
+    "IN_AADHAAR": re.compile(r"\b[0-9०-९૦-૯]{4}[-\s]?[0-9०-९૦-૯]{4}[-\s]?[0-9०-९૦-૯]{4}\b"),
+    "IN_VID": re.compile(
+        r"\b(?:VID|વિઆઈડી|विड)\s*[:\-]?\s*[0-9०-९૦-૯]{4}[-\s]?[0-9०-९૦-૯]{4}[-\s]?[0-9०-९૦-૯]{4}[-\s]?[0-9०-९૦-૯]{4}\b",
+        re.IGNORECASE,
+    ),
+    "DATE_OF_BIRTH": re.compile(
+        r"\b(?:DOB|D\.O\.B|Date\s*of\s*Birth|जन्म\s*तिथि|જન્મ\s*તારીખ)?\s*[:\-]?\s*[0-3०-३૦-૩][0-9०-९૦-૯][\/\-\.][0-1०-१૦-૧][0-9०-९૦-૯][\/\-\.][1-2१२][0-9०-९૦-૯]{3}\b",
+        re.IGNORECASE,
+    ),
     "PERSON_NAME": re.compile(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\b"),
+    "PERSON_NAME_INDIC": re.compile(
+        r"(?:नाम|Name|નામ)\s*[:\-]?\s*([ऀ-ॿ઀-૿]{2,}(?:\s+[ऀ-ॿ઀-૿]{2,}){0,3})",
+        re.IGNORECASE,
+    ),
     "IN_ADDRESS": re.compile(
         r"\b\d{1,4}\s+[A-Za-z0-9\s,.-]*(Road|Rd|Street|St|Lane|Ln|Avenue|Ave|Nagar|Colony|Sector)\b"
+    ),
+    "IN_ADDRESS_INDIC": re.compile(
+        r"(?:पता|સરનામું|Address)\s*[:\-]?\s*[ऀ-ॿ઀-૿0-9A-Za-z\s,./-]{8,}",
+        re.IGNORECASE,
     ),
 }
 
@@ -70,7 +87,13 @@ PRESIDIO_ENTITY_MAP = {
     "IP_ADDRESS": "IP_ADDRESS",
     "IN_PAN": "IN_PAN",
     "IN_AADHAAR": "IN_AADHAAR",
+    "DATE_TIME": "DATE_OF_BIRTH",
     "IN_ADDRESS": "IN_ADDRESS",
+}
+
+FALLBACK_ENTITY_MAP = {
+    "PERSON_NAME_INDIC": "PERSON_NAME",
+    "IN_ADDRESS_INDIC": "IN_ADDRESS",
 }
 
 
@@ -112,6 +135,7 @@ def detect_pii(text: str) -> list[dict[str, Any]]:
             pass
 
     for entity_type, pattern in FALLBACK_PATTERNS.items():
+        normalized_entity = FALLBACK_ENTITY_MAP.get(entity_type, entity_type)
         for match in pattern.finditer(text):
             _add_finding(
                 findings,
@@ -119,7 +143,7 @@ def detect_pii(text: str) -> list[dict[str, Any]]:
                 {
                     "start": match.start(),
                     "end": match.end(),
-                    "entity_type": entity_type,
+                    "entity_type": normalized_entity,
                     "score": 0.5,
                     "value": match.group(0),
                     "source": "regex",

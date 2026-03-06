@@ -49,11 +49,42 @@ def _sanitize_chunk(text: str, mode: str) -> tuple[str, list[dict[str, Any]]]:
     return sanitized, findings
 
 
-def _sanitize_image(image, mode: str):
+def _ocr_langs() -> str:
+    # Use configured OCR languages when available; default supports English + Hindi + Gujarati.
+    return os.getenv("OCR_LANGS", "eng+hin+guj")
+
+
+def _ocr_config() -> str:
+    psm = os.getenv("OCR_PSM", "6")
+    return f"--oem 3 --psm {psm}"
+
+
+def _image_to_data_with_fallback(image):
     import pytesseract
+
+    langs = _ocr_langs()
+    config = _ocr_config()
+    try:
+        return pytesseract.image_to_data(image, output_type=pytesseract.Output.DICT, lang=langs, config=config)
+    except Exception:
+        return pytesseract.image_to_data(image, output_type=pytesseract.Output.DICT, lang="eng", config=config)
+
+
+def _image_to_string_with_fallback(image) -> str:
+    import pytesseract
+
+    langs = _ocr_langs()
+    config = _ocr_config()
+    try:
+        return pytesseract.image_to_string(image, lang=langs, config=config)
+    except Exception:
+        return pytesseract.image_to_string(image, lang="eng", config=config)
+
+
+def _sanitize_image(image, mode: str):
     from PIL import ImageDraw
 
-    ocr = pytesseract.image_to_data(image, output_type=pytesseract.Output.DICT)
+    ocr = _image_to_data_with_fallback(image)
     words: list[dict[str, Any]] = []
     cursor = 0
     pieces: list[str] = []
@@ -155,7 +186,6 @@ def extract_text_from_file(filename: str, file_bytes: bytes) -> tuple[str, str]:
 
     if ext == ".pdf":
         import fitz
-        import pytesseract
         from PIL import Image
 
         doc = fitz.open(stream=file_bytes, filetype="pdf")
@@ -168,7 +198,7 @@ def extract_text_from_file(filename: str, file_bytes: bytes) -> tuple[str, str]:
 
             pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
             image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
-            chunks.append(pytesseract.image_to_string(image))
+            chunks.append(_image_to_string_with_fallback(image))
         return "\n\n".join(chunks), "pdf_ocr"
 
     if ext == ".docx":
@@ -412,21 +442,94 @@ def sanitize_file_preserving_format(
         doc = fitz.open(stream=file_bytes, filetype="pdf")
         findings_bucket: list[list[dict[str, Any]]] = []
         sanitized_pages: list[str] = []
-        redacted_images: list[Any] = []
 
         for page in doc:
+            page_text = (page.get_text("text") or "").strip()
+
+            if page_text:
+                findings = detect_pii(page_text)
+                sanitized_text, _ = sanitize_text(page_text, findings, mode=mode)
+                sanitized_pages.append(sanitized_text)
+                findings_bucket.append(findings)
+
+                unique_values = []
+                seen_values = set()
+                for finding in findings:
+                    value = finding.get("value", "")
+                    if value and value not in seen_values:
+                        seen_values.add(value)
+                        unique_values.append(value)
+
+                for value in unique_values:
+                    for rect in page.search_for(value):
+                        page.add_redact_annot(rect, fill=(0, 0, 0))
+                page.apply_redactions()
+                continue
+
+            # OCR fallback for scanned/image-only pages.
             pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
-            page_image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
-            redacted, _, sanitized_text, findings = _sanitize_image(page_image, mode)
-            redacted_images.append(redacted.convert("RGB"))
+            image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+            ocr = _image_to_data_with_fallback(image)
+
+            words: list[dict[str, Any]] = []
+            cursor = 0
+            parts: list[str] = []
+
+            for idx, raw_text in enumerate(ocr.get("text", [])):
+                word = (raw_text or "").strip()
+                if not word:
+                    continue
+                try:
+                    confidence = float(ocr.get("conf", ["-1"])[idx])
+                except ValueError:
+                    confidence = -1
+                if confidence < 0:
+                    continue
+
+                if parts:
+                    parts.append(" ")
+                    cursor += 1
+                start = cursor
+                parts.append(word)
+                cursor += len(word)
+
+                words.append(
+                    {
+                        "start": start,
+                        "end": cursor,
+                        "left": int(ocr["left"][idx]),
+                        "top": int(ocr["top"][idx]),
+                        "width": int(ocr["width"][idx]),
+                        "height": int(ocr["height"][idx]),
+                    }
+                )
+
+            page_ocr_text = "".join(parts)
+            findings = detect_pii(page_ocr_text)
+            sanitized_text, _ = sanitize_text(page_ocr_text, findings, mode=mode)
             sanitized_pages.append(sanitized_text)
             findings_bucket.append(findings)
 
-        if not redacted_images:
-            raise ValueError("Empty PDF document")
+            x_scale = page.rect.width / max(1, pix.width)
+            y_scale = page.rect.height / max(1, pix.height)
+
+            for word in words:
+                overlaps = any(
+                    finding["start"] < word["end"] and word["start"] < finding["end"]
+                    for finding in findings
+                )
+                if not overlaps:
+                    continue
+                x0 = word["left"] * x_scale
+                y0 = word["top"] * y_scale
+                x1 = (word["left"] + max(1, word["width"])) * x_scale
+                y1 = (word["top"] + max(1, word["height"])) * y_scale
+                page.add_redact_annot(fitz.Rect(x0, y0, x1, y1), fill=(0, 0, 0))
+            page.apply_redactions()
 
         output = io.BytesIO()
-        redacted_images[0].save(output, format="PDF", save_all=True, append_images=redacted_images[1:])
+        doc.save(output, garbage=4, deflate=True)
+        doc.close()
         flattened_findings = [item for chunk in findings_bucket for item in chunk]
         return {
             "sanitized_text": "\n\n".join(sanitized_pages),

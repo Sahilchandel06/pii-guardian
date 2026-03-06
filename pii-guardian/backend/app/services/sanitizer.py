@@ -19,6 +19,18 @@ def _mask_value(entity_type: str, value: str) -> str:
         if len(digits) == 12:
             return f"XXXX XXXX {digits[-4:]}"
 
+    if entity_type == "IN_VID":
+        digits = re.sub(r"\D", "", value)
+        if len(digits) == 16:
+            return f"XXXX XXXX XXXX {digits[-4:]}"
+
+    if entity_type == "DATE_OF_BIRTH":
+        parts = re.split(r"[\/\-.]", value.strip())
+        if len(parts) == 3 and parts[-1].isdigit():
+            year = parts[-1][-4:]
+            return f"XX/XX/{year}"
+        return "[MASKED_DOB]"
+
     if entity_type == "IN_PAN" and len(value) == 10:
         return f"{value[:2]}****{value[-2:]}"
 
