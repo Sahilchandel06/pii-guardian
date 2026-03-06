@@ -32,11 +32,38 @@ export default function FileCenter({ token, files, isAdmin, setNotice, setError 
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
+      const contentDisposition = response.headers.get("content-disposition") || "";
+      const match = contentDisposition.match(/filename="([^"]+)"/i);
+      const resolvedFilename = match?.[1];
       link.href = url;
-      link.download = original ? filename : `${filename}.sanitized.txt`;
+      link.download = resolvedFilename || (original ? filename : `${filename}.sanitized.txt`);
       link.click();
       URL.revokeObjectURL(url);
       setNotice("Download started.");
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const downloadSanitizedOriginal = async (fileId, filename) => {
+    setNotice("");
+    setError("");
+    try {
+      const response = await apiRequest(`/files/${fileId}/download-sanitized-original`, { token });
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      const contentDisposition = response.headers.get("content-disposition") || "";
+      const match = contentDisposition.match(/filename="([^"]+)"/i);
+      const resolvedFilename = match?.[1];
+      const dot = filename.lastIndexOf(".");
+      const fallbackName =
+        dot > 0 ? `${filename.slice(0, dot)}.sanitized${filename.slice(dot)}` : `${filename}.sanitized`;
+      link.href = url;
+      link.download = resolvedFilename || fallbackName;
+      link.click();
+      URL.revokeObjectURL(url);
+      setNotice("Sanitized original-format download started.");
     } catch (err) {
       setError(err.message);
     }
@@ -86,7 +113,8 @@ export default function FileCenter({ token, files, isAdmin, setNotice, setError 
                 <td>{item.pii_count}</td>
                 <td className="action-cell">
                   <button onClick={() => loadPreview(item.id, false)}>Sanitized</button>
-                  <button onClick={() => download(item.id, item.filename, false)}>Download Safe</button>
+                  <button onClick={() => downloadSanitizedOriginal(item.id, item.filename)}>Download Safe (Original)</button>
+                  <button onClick={() => download(item.id, item.filename, false)}>Download Safe (TXT)</button>
                   {isAdmin && <button onClick={() => loadPreview(item.id, true)}>Raw</button>}
                   {isAdmin && <button onClick={() => download(item.id, item.filename, true)}>Download Raw</button>}
                 </td>

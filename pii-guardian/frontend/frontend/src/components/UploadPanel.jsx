@@ -37,7 +37,7 @@ export default function UploadPanel({ token, onUploaded, setNotice, setError }) 
   return (
     <section className="panel">
       <h3>Admin Upload Center</h3>
-      <p>Supported formats: SQL, CSV, JSON, PDF, DOCX, TXT, PNG, JPG</p>
+      <p>Supported formats: SQL, CSV, JSON, PDF (including image-based), DOCX, TXT, PNG, JPG, JPEG, XLSX, XLSM, XLTX, XLTM, XLS</p>
       <form className="upload-grid" onSubmit={onSubmit}>
         <input type="file" onChange={(event) => setFile(event.target.files?.[0] || null)} required />
         <select value={mode} onChange={(event) => setMode(event.target.value)}>

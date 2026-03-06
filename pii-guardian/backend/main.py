@@ -1,5 +1,8 @@
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
 
 from app.database.db import Base, engine
 from app.models.audit import AuditLog  # noqa: F401
@@ -9,6 +12,8 @@ from app.routes.audit_routes import router as audit_router
 from app.routes.auth_routes import router as auth_router
 from app.routes.file_routes import router as file_router
 
+load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
+
 app = FastAPI(title="PII Guardian", version="1.0.0")
 
 app.add_middleware(
@@ -17,6 +22,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition"],
 )
 
 Base.metadata.create_all(bind=engine)

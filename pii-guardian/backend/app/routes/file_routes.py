@@ -12,9 +12,7 @@ from app.database.db import get_db
 from app.models.file import FileRecord
 from app.models.user import User
 from app.services.audit_service import write_audit_log
-from app.services.file_parser import extract_text_from_file, is_supported_file
-from app.services.pii_detector import detect_pii, summarize_findings
-from app.services.sanitizer import sanitize_text
+from app.services.file_parser import extract_text_from_file, is_supported_file, sanitize_file_preserving_format
 from app.utils.security import get_current_admin, get_current_user
 from app.utils.storage_crypto import decrypt_bytes, encrypt_bytes
 
@@ -37,6 +35,15 @@ def _save_encrypted(path: Path, data: bytes) -> None:
         outfile.write(encrypt_bytes(data))
 
 
+def _derive_sanitized_original_path(item: FileRecord) -> Path:
+    sanitized_txt_path = Path(item.sanitized_path)
+    ext = Path(item.filename).suffix.lower() or ".txt"
+    marker = ".sanitized.txt.enc"
+    if sanitized_txt_path.name.endswith(marker):
+        return sanitized_txt_path.with_name(sanitized_txt_path.name.replace(marker, f".sanitized{ext}.enc"))
+    return sanitized_txt_path.with_name(f"{Path(item.filename).stem}.sanitized{ext}.enc")
+
+
 @router.post("/upload")
 async def upload_file(
     file: UploadFile = File(...),
@@ -47,7 +54,7 @@ async def upload_file(
     if not is_supported_file(file.filename):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Unsupported format. Allowed: SQL, CSV, JSON, PDF, DOCX, TXT, PNG, JPG",
+            detail="Unsupported format. Allowed: SQL, CSV, JSON, PDF, DOCX, TXT, PNG, JPG, JPEG, XLSX, XLSM, XLTX, XLTM, XLS",
         )
 
     raw_bytes = await file.read()
@@ -61,23 +68,30 @@ async def upload_file(
     write_audit_log(db, admin_user.id, "FILE_UPLOAD", f"Uploaded file '{file.filename}'")
 
     try:
-        extracted_text, parser = extract_text_from_file(file.filename, raw_bytes)
+        sanitized_payload = sanitize_file_preserving_format(file.filename, raw_bytes, mode=mode)
+        sanitized_text = sanitized_payload["sanitized_text"]
+        sanitized_original_bytes = sanitized_payload["sanitized_original_bytes"]
+        findings = sanitized_payload["findings"]
+        summary = sanitized_payload["summary"]
+        parser = sanitized_payload["parser"]
+        original_sanitized_ext = sanitized_payload["sanitized_original_ext"]
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Failed to parse file: {exc}") from exc
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Failed to sanitize file: {exc}") from exc
 
-    findings = detect_pii(extracted_text)
-    summary = summarize_findings(findings)
+    sanitized_filename = f"{uuid.uuid4().hex}_{Path(file.filename).stem}.sanitized.txt"
+    sanitized_path = SANITIZED_DIR / f"{sanitized_filename}.enc"
+    sanitized_original_filename = sanitized_filename.replace(".sanitized.txt", f".sanitized{original_sanitized_ext}")
+    sanitized_original_path = SANITIZED_DIR / f"{sanitized_original_filename}.enc"
+
+    _save_encrypted(sanitized_path, sanitized_text.encode("utf-8"))
+    _save_encrypted(sanitized_original_path, sanitized_original_bytes)
+
     write_audit_log(
         db,
         admin_user.id,
         "PII_DETECTION",
         f"file='{file.filename}' pii_count={len(findings)} entities={json.dumps(summary)}",
     )
-
-    sanitized_text, token_map = sanitize_text(extracted_text, findings, mode=mode)
-    sanitized_filename = f"{uuid.uuid4().hex}_{Path(file.filename).stem}.sanitized.txt"
-    sanitized_path = SANITIZED_DIR / f"{sanitized_filename}.enc"
-    _save_encrypted(sanitized_path, sanitized_text.encode("utf-8"))
 
     file_record = FileRecord(
         filename=file.filename,
@@ -107,7 +121,10 @@ async def upload_file(
         "sanitization_mode": mode,
         "pii_count": file_record.pii_count,
         "entities": summary,
-        "token_count": len(token_map),
+        "sanitized_downloads": {
+            "txt": True,
+            "original_format": True,
+        },
     }
 
 
@@ -127,6 +144,7 @@ def list_files(
             "pii_count": item.pii_count,
             "sanitization_mode": item.sanitization_mode,
             "detection_summary": json.loads(item.detection_summary) if item.detection_summary else {},
+            "sanitized_original_download_available": _derive_sanitized_original_path(item).exists(),
         }
         for item in files
     ]
@@ -209,6 +227,42 @@ def download_sanitized_file(
     return StreamingResponse(
         iter([payload]),
         media_type="text/plain",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/{file_id}/download-sanitized-original")
+def download_sanitized_original_format_file(
+    file_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    item = db.query(FileRecord).filter(FileRecord.id == file_id).first()
+    if not item:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+
+    sanitized_original_path = _derive_sanitized_original_path(item)
+    if not sanitized_original_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Sanitized original-format file is not available for this record",
+        )
+
+    payload = _read_decrypted(str(sanitized_original_path))
+    ext = Path(item.filename).suffix.lower()
+    filename = f"{Path(item.filename).stem}.sanitized{ext}"
+    media_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+
+    write_audit_log(
+        db,
+        current_user.id,
+        "DOWNLOAD",
+        f"Downloaded sanitized original-format file file_id={file_id} ext={ext}",
+    )
+
+    return StreamingResponse(
+        iter([payload]),
+        media_type=media_type,
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
