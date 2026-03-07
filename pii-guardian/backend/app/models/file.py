@@ -22,5 +22,8 @@ class FileRecord(Base):
     encryption_version = Column(String(30), nullable=True, default="legacy_fernet")
     file_sha256 = Column(String(64), nullable=True)
     cipher_sha256 = Column(String(64), nullable=True)
+    malware_scan_status = Column(String(30), nullable=True, default="unknown")
+    malware_scan_source = Column(String(40), nullable=True, default="none")
+    malware_scan_payload = Column(Text, nullable=True)
     retention_expires_at = Column(DateTime, nullable=True, index=True)
     legal_hold = Column(Boolean, nullable=False, default=False, index=True)

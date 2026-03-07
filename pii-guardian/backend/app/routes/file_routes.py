@@ -1,17 +1,21 @@
-﻿import json
+import json
+import io
 import mimetypes
 import os
 import uuid
 import math
+import zipfile
 from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
+import requests
 
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, UploadFile, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.database.db import get_db
+from app.models.audit import AuditLog
 from app.models.file import FileRecord
 from app.models.user import User
 from app.services.audit_service import write_audit_log
@@ -34,6 +38,10 @@ MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "25"))
 MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
 ORIGINAL_RETENTION_DAYS = int(os.getenv("ORIGINAL_RETENTION_DAYS", "30"))
 STEPUP_REQUIRED_FOR_RAW_DOWNLOAD = os.getenv("STEPUP_REQUIRED_FOR_RAW_DOWNLOAD", "true").lower() == "true"
+BACKUP_STEPUP_REQUIRED = os.getenv("BACKUP_STEPUP_REQUIRED", "true").lower() == "true"
+VIRUSTOTAL_API_KEY = os.getenv("VIRUSTOTAL_API_KEY", "").strip()
+VIRUSTOTAL_TIMEOUT_SECONDS = int(os.getenv("VIRUSTOTAL_TIMEOUT_SECONDS", "12"))
+VIRUSTOTAL_ENABLED = os.getenv("VIRUSTOTAL_ENABLED", "false").lower() == "true" and bool(VIRUSTOTAL_API_KEY)
 ORIGINAL_DIR.mkdir(parents=True, exist_ok=True)
 BLOCKED_BINARY_SIGNATURES = (
     b"MZ",  # Windows PE executables
@@ -173,6 +181,95 @@ def _risk_level(score: int) -> str:
     return "low"
 
 
+def _serialize_datetime(value):
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return value
+
+
+def _scan_with_virustotal_hash(file_sha256: str) -> dict:
+    if not VIRUSTOTAL_ENABLED:
+        return {
+            "status": "unknown",
+            "source": "virustotal_disabled",
+            "payload": {"reason": "VIRUSTOTAL_ENABLED is false or API key missing"},
+        }
+
+    url = f"https://www.virustotal.com/api/v3/files/{file_sha256}"
+    headers = {"x-apikey": VIRUSTOTAL_API_KEY}
+    try:
+        response = requests.get(url, headers=headers, timeout=VIRUSTOTAL_TIMEOUT_SECONDS)
+    except Exception as exc:
+        return {
+            "status": "unknown",
+            "source": "virustotal_error",
+            "payload": {"error": str(exc)},
+        }
+
+    if response.status_code == 404:
+        return {
+            "status": "unknown",
+            "source": "virustotal_hash",
+            "payload": {"found": False, "reason": "hash_not_found"},
+        }
+
+    if response.status_code != 200:
+        return {
+            "status": "unknown",
+            "source": "virustotal_error",
+            "payload": {"status_code": response.status_code, "body": response.text[:500]},
+        }
+
+    data = response.json()
+    attributes = (data.get("data") or {}).get("attributes") or {}
+    stats = attributes.get("last_analysis_stats") or {}
+    malicious = int(stats.get("malicious", 0))
+    suspicious = int(stats.get("suspicious", 0))
+    harmless = int(stats.get("harmless", 0))
+    undetected = int(stats.get("undetected", 0))
+    status = "malicious" if (malicious > 0 or suspicious > 0) else ("clean" if harmless > 0 else "unknown")
+
+    return {
+        "status": status,
+        "source": "virustotal_hash",
+        "payload": {
+            "found": True,
+            "sha256": file_sha256,
+            "stats": {
+                "malicious": malicious,
+                "suspicious": suspicious,
+                "harmless": harmless,
+                "undetected": undetected,
+            },
+            "last_analysis_date": attributes.get("last_analysis_date"),
+            "reputation": attributes.get("reputation"),
+        },
+    }
+
+
+def _resolve_malware_scan_result(db: Session, file_sha256: str) -> dict:
+    cached = (
+        db.query(FileRecord)
+        .filter(FileRecord.file_sha256 == file_sha256)
+        .filter(FileRecord.malware_scan_status.isnot(None))
+        .order_by(FileRecord.id.desc())
+        .first()
+    )
+    if cached and cached.malware_scan_status in {"clean", "malicious", "unknown"}:
+        payload = {}
+        if cached.malware_scan_payload:
+            try:
+                payload = json.loads(cached.malware_scan_payload)
+            except Exception:
+                payload = {"raw": cached.malware_scan_payload}
+        return {
+            "status": cached.malware_scan_status,
+            "source": "cache",
+            "payload": payload,
+        }
+    return _scan_with_virustotal_hash(file_sha256)
+
+
 @router.post("/upload")
 async def upload_file(
     file: UploadFile = File(...),
@@ -203,6 +300,20 @@ async def upload_file(
                 detail="Executable binary uploads are blocked by security policy.",
             )
 
+    file_sha256 = sha256_hex(raw_bytes)
+    malware_scan = _resolve_malware_scan_result(db, file_sha256)
+    if malware_scan["status"] == "malicious":
+        write_audit_log(
+            db,
+            current_user.id,
+            "MALWARE_BLOCK",
+            f"Blocked upload filename='{file.filename}' sha256={file_sha256} source={malware_scan.get('source')}",
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Upload blocked: file flagged as malicious by malware scan.",
+        )
+
     ext = Path(file.filename).suffix.lower()
     effective_mode = "redact" if ext in {".pdf", ".png", ".jpg", ".jpeg"} else mode
 
@@ -232,6 +343,9 @@ async def upload_file(
         encryption_version=encryption_payload["encryption_version"],
         file_sha256=encryption_payload["file_sha256"],
         cipher_sha256=encryption_payload["cipher_sha256"],
+        malware_scan_status=malware_scan.get("status", "unknown"),
+        malware_scan_source=malware_scan.get("source", "none"),
+        malware_scan_payload=json.dumps(malware_scan.get("payload", {}), ensure_ascii=False),
         retention_expires_at=expires_at,
         legal_hold=False,
     )
@@ -256,6 +370,8 @@ async def upload_file(
         "sanitization_mode": effective_mode,
         "pii_count": file_record.pii_count,
         "entities": {},
+        "malware_scan_status": file_record.malware_scan_status,
+        "malware_scan_source": file_record.malware_scan_source,
         "sanitized_downloads": {
             "txt": True,
             "original_format": True,
@@ -283,6 +399,8 @@ def list_files(
             "pii_count": item.pii_count,
             "sanitization_mode": _effective_mode(item),
             "detection_summary": json.loads(item.detection_summary) if item.detection_summary else {},
+            "malware_scan_status": item.malware_scan_status or "unknown",
+            "malware_scan_source": item.malware_scan_source or "none",
             "sanitized_original_download_available": True,
             "retention_expires_at": item.retention_expires_at,
             "legal_hold": item.legal_hold,
@@ -307,6 +425,8 @@ def list_all_sanitized_files(
             "pii_count": item.pii_count,
             "sanitization_mode": _effective_mode(item),
             "detection_summary": json.loads(item.detection_summary) if item.detection_summary else {},
+            "malware_scan_status": item.malware_scan_status or "unknown",
+            "malware_scan_source": item.malware_scan_source or "none",
             "retention_expires_at": item.retention_expires_at,
         }
         for item in files
@@ -486,6 +606,178 @@ def get_risk_dashboard(
         "per_file_scores": per_file_rows[:200],
         "per_user_scores": per_user_scores,
     }
+
+
+@router.get("/admin/backup-download")
+def download_backup_zip(
+    x_stepup_password: str | None = Header(default=None, alias="X-Stepup-Password"),
+    admin_user: User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    if BACKUP_STEPUP_REQUIRED:
+        if not x_stepup_password:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Step-up password required")
+        if not verify_password(x_stepup_password, admin_user.password_hash):
+            write_audit_log(db, admin_user.id, "STEPUP_FAIL", "Failed step-up for backup download")
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid step-up password")
+
+    users = db.query(User).order_by(User.id.asc()).all()
+    files = db.query(FileRecord).order_by(FileRecord.id.asc()).all()
+    audits = db.query(AuditLog).order_by(AuditLog.id.asc()).all()
+
+    db_dump = {
+        "users": [
+            {
+                "id": user.id,
+                "username": user.username,
+                "email": user.email,
+                "password_hash": user.password_hash,
+                "role": user.role,
+                "created_at": _serialize_datetime(user.created_at),
+                "failed_login_attempts": user.failed_login_attempts,
+                "locked_until": _serialize_datetime(user.locked_until),
+            }
+            for user in users
+        ],
+        "files": [
+            {
+                "id": item.id,
+                "filename": item.filename,
+                "content_type": item.content_type,
+                "original_path": item.original_path,
+                "sanitized_path": item.sanitized_path,
+                "uploaded_by": item.uploaded_by,
+                "upload_time": _serialize_datetime(item.upload_time),
+                "sanitization_mode": item.sanitization_mode,
+                "pii_count": item.pii_count,
+                "detection_summary": item.detection_summary,
+                "encrypted_dek": item.encrypted_dek,
+                "encryption_version": item.encryption_version,
+                "file_sha256": item.file_sha256,
+                "cipher_sha256": item.cipher_sha256,
+                "malware_scan_status": item.malware_scan_status,
+                "malware_scan_source": item.malware_scan_source,
+                "malware_scan_payload": item.malware_scan_payload,
+                "retention_expires_at": _serialize_datetime(item.retention_expires_at),
+                "legal_hold": item.legal_hold,
+            }
+            for item in files
+        ],
+        "audit_logs": [
+            {
+                "id": log.id,
+                "user_id": log.user_id,
+                "action": log.action,
+                "details": log.details,
+                "timestamp": _serialize_datetime(log.timestamp),
+                "prev_hash": log.prev_hash,
+                "log_hash": log.log_hash,
+            }
+            for log in audits
+        ],
+    }
+
+    config_snapshot = {
+        "APP_ENV": os.getenv("APP_ENV", "development"),
+        "HOST": os.getenv("HOST", "0.0.0.0"),
+        "PORT": os.getenv("PORT", "8000"),
+        "MAX_UPLOAD_MB": os.getenv("MAX_UPLOAD_MB", "25"),
+        "ORIGINAL_RETENTION_DAYS": os.getenv("ORIGINAL_RETENTION_DAYS", "30"),
+        "STEPUP_REQUIRED_FOR_RAW_DOWNLOAD": os.getenv("STEPUP_REQUIRED_FOR_RAW_DOWNLOAD", "true"),
+        "BACKUP_STEPUP_REQUIRED": os.getenv("BACKUP_STEPUP_REQUIRED", "true"),
+        "USE_PRESIDIO": os.getenv("USE_PRESIDIO", "true"),
+        "USE_LLM": os.getenv("USE_LLM", "false"),
+        "USE_LLM_OPEN_SOURCE": os.getenv("USE_LLM_OPEN_SOURCE", "false"),
+        "REQUIRE_AADHAAR_VERHOEFF": os.getenv("REQUIRE_AADHAAR_VERHOEFF", "false"),
+        "OCR_LANG": os.getenv("OCR_LANG", "en"),
+        "OCR_USE_ANGLE_CLS": os.getenv("OCR_USE_ANGLE_CLS", "true"),
+        "USE_QR_SCAN": os.getenv("USE_QR_SCAN", "true"),
+    }
+
+    db_dump_bytes = json.dumps(db_dump, ensure_ascii=False, indent=2).encode("utf-8")
+    audit_jsonl = "\n".join(
+        json.dumps(
+            {
+                "id": log.id,
+                "user_id": log.user_id,
+                "action": log.action,
+                "details": log.details,
+                "timestamp": _serialize_datetime(log.timestamp),
+                "prev_hash": log.prev_hash,
+                "log_hash": log.log_hash,
+            },
+            ensure_ascii=False,
+        )
+        for log in audits
+    ).encode("utf-8")
+
+    backup_buffer = io.BytesIO()
+    original_file_count = 0
+    original_total_bytes = 0
+    missing_originals: list[str] = []
+
+    with zipfile.ZipFile(backup_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("database_dump.json", db_dump_bytes)
+        zf.writestr("audit_logs.jsonl", audit_jsonl)
+        zf.writestr("config_snapshot.json", json.dumps(config_snapshot, ensure_ascii=False, indent=2).encode("utf-8"))
+
+        for item in files:
+            original_path = Path(item.original_path)
+            if not original_path.exists() or not original_path.is_file():
+                missing_originals.append(str(original_path))
+                continue
+            try:
+                payload = _read_bytes(str(original_path))
+                original_file_count += 1
+                original_total_bytes += len(payload)
+                zf.writestr(f"originals/{original_path.name}", payload)
+            except Exception:
+                missing_originals.append(str(original_path))
+
+        manifest = {
+            "version": 1,
+            "created_at_utc": datetime.utcnow().isoformat(),
+            "created_by_user_id": admin_user.id,
+            "counts": {
+                "users": len(users),
+                "files": len(files),
+                "audit_logs": len(audits),
+                "original_files_included": original_file_count,
+                "missing_original_files": len(missing_originals),
+            },
+            "sizes": {
+                "database_dump_bytes": len(db_dump_bytes),
+                "audit_jsonl_bytes": len(audit_jsonl),
+                "original_total_bytes": original_total_bytes,
+            },
+            "checksums": {
+                "database_dump_sha256": sha256_hex(db_dump_bytes),
+                "audit_jsonl_sha256": sha256_hex(audit_jsonl),
+            },
+            "missing_original_paths": missing_originals,
+            "notes": "Encrypted originals are included as-is. Restore requires FILE_MASTER_KEY and DB metadata.",
+        }
+        zf.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8"))
+
+    backup_bytes = backup_buffer.getvalue()
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    filename = f"pii_guardian_backup_{timestamp}.zip"
+
+    write_audit_log(
+        db,
+        admin_user.id,
+        "BACKUP_EXPORT",
+        (
+            f"Downloaded backup zip users={len(users)} files={len(files)} audits={len(audits)} "
+            f"originals_included={original_file_count} missing_originals={len(missing_originals)}"
+        ),
+    )
+
+    return StreamingResponse(
+        iter([backup_bytes]),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/{file_id}/raw-preview")
@@ -689,3 +981,4 @@ def delete_file_record(
 
     write_audit_log(db, admin_user.id, "FILE_DELETE", f"Deleted file_id={file_id} filename='{deleted_filename}'")
     return {"message": "File deleted successfully", "file_id": file_id}
+

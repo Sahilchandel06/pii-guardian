@@ -35,7 +35,7 @@ GENERIC_STRUCTURED_MIME_TYPES = {
     "application/x-yaml",
     "application/yaml",
 }
-_paddle_ocr = None
+_paddle_ocr: dict[str, Any] = {}
 
 
 def _looks_like_text(file_bytes: bytes) -> bool:
@@ -80,15 +80,30 @@ def _sanitize_chunk(text: str, mode: str) -> tuple[str, list[dict[str, Any]]]:
     return sanitized, findings
 
 
-def _ocr_lang() -> str:
-    # PaddleOCR language code, e.g. en, ch, hi.
-    return os.getenv("OCR_LANG", "en")
+def _ocr_langs() -> list[str]:
+    # PaddleOCR language codes (comma-separated), e.g. en,hi.
+    raw = os.getenv("OCR_LANGS", "").strip()
+    if raw:
+        langs = [lang.strip().lower() for lang in raw.split(",") if lang.strip()]
+        if langs:
+            return langs
+    return [os.getenv("OCR_LANG", "en").strip().lower()]
 
 
 def _tesseract_lang() -> str:
-    lang = _ocr_lang().lower()
-    mapping = {"en": "eng"}
-    return mapping.get(lang, lang)
+    raw = os.getenv("OCR_TESS_LANGS", "").strip()
+    if raw:
+        return raw
+    mapping = {
+        "en": "eng",
+        "hi": "hin",
+        "gu": "guj",
+        "guj": "guj",
+    }
+    mapped = [mapping.get(lang, lang) for lang in _ocr_langs()]
+    if "eng" not in mapped:
+        mapped.append("eng")
+    return "+".join(dict.fromkeys(mapped))
 
 
 def _configure_paddle_cache() -> None:
@@ -105,21 +120,21 @@ def _configure_paddle_cache() -> None:
     os.makedirs(mpl_config_dir, exist_ok=True)
 
 
-def _get_paddle_ocr():
+def _get_paddle_ocr(lang: str):
     global _paddle_ocr
-    if _paddle_ocr is not None:
-        return _paddle_ocr
+    if lang in _paddle_ocr:
+        return _paddle_ocr[lang]
 
     _configure_paddle_cache()
     from paddleocr import PaddleOCR
 
     use_angle_cls = os.getenv("OCR_USE_ANGLE_CLS", "true").lower() == "true"
-    _paddle_ocr = PaddleOCR(
+    _paddle_ocr[lang] = PaddleOCR(
         use_angle_cls=use_angle_cls,
-        lang=_ocr_lang(),
+        lang=lang,
         show_log=False,
     )
-    return _paddle_ocr
+    return _paddle_ocr[lang]
 
 
 def _extract_ocr_segments_tesseract(image) -> tuple[list[dict[str, Any]], str]:
@@ -174,73 +189,87 @@ def _extract_ocr_segments(image) -> tuple[list[dict[str, Any]], str]:
     except Exception as exc:
         raise RuntimeError("NumPy is required for PaddleOCR image processing.") from exc
 
-    try:
-        ocr_engine = _get_paddle_ocr()
-    except Exception as exc:
+    best_segments: list[dict[str, Any]] = []
+    best_text = ""
+    paddle_any_succeeded = False
+    paddle_error = None
+
+    for lang in _ocr_langs():
         try:
-            return _extract_ocr_segments_tesseract(image)
-        except Exception:
-            raise RuntimeError(
-                "PaddleOCR is unavailable. Install paddleocr and paddlepaddle, then retry."
-            ) from exc
+            ocr_engine = _get_paddle_ocr(lang)
+            result = ocr_engine.ocr(np.array(image.convert("RGB")), cls=True)
+            paddle_any_succeeded = True
+        except Exception as exc:
+            paddle_error = exc
+            continue
+
+        lines = result[0] if isinstance(result, list) and result else []
+        segments: list[dict[str, Any]] = []
+        cursor = 0
+        parts: list[str] = []
+
+        for line in lines or []:
+            if not isinstance(line, list) or len(line) < 2:
+                continue
+            box = line[0]
+            text_block = line[1]
+            if not text_block or len(text_block) < 1:
+                continue
+
+            text = str(text_block[0] or "").strip()
+            if not text:
+                continue
+            try:
+                confidence = float(text_block[1]) if len(text_block) > 1 else 0.0
+            except (TypeError, ValueError):
+                confidence = 0.0
+            if confidence < 0:
+                continue
+
+            try:
+                x_values = [int(point[0]) for point in box]
+                y_values = [int(point[1]) for point in box]
+            except Exception:
+                continue
+
+            if parts:
+                parts.append(" ")
+                cursor += 1
+            start = cursor
+            parts.append(text)
+            cursor += len(text)
+
+            left = min(x_values)
+            right = max(x_values)
+            top = min(y_values)
+            bottom = max(y_values)
+            segments.append(
+                {
+                    "start": start,
+                    "end": cursor,
+                    "left": left,
+                    "top": top,
+                    "width": max(1, right - left),
+                    "height": max(1, bottom - top),
+                }
+            )
+
+        plain_text = "".join(parts)
+        if len(plain_text) > len(best_text):
+            best_text = plain_text
+            best_segments = segments
+
+    if best_segments or best_text:
+        return best_segments, best_text
+
     try:
-        result = ocr_engine.ocr(np.array(image.convert("RGB")), cls=True)
-    except Exception:
         return _extract_ocr_segments_tesseract(image)
-    lines = result[0] if isinstance(result, list) and result else []
-
-    segments: list[dict[str, Any]] = []
-    cursor = 0
-    parts: list[str] = []
-
-    for line in lines or []:
-        if not isinstance(line, list) or len(line) < 2:
-            continue
-
-        box = line[0]
-        text_block = line[1]
-        if not text_block or len(text_block) < 1:
-            continue
-
-        text = str(text_block[0] or "").strip()
-        if not text:
-            continue
-        try:
-            confidence = float(text_block[1]) if len(text_block) > 1 else 0.0
-        except (TypeError, ValueError):
-            confidence = 0.0
-        if confidence < 0:
-            continue
-
-        try:
-            x_values = [int(point[0]) for point in box]
-            y_values = [int(point[1]) for point in box]
-        except Exception:
-            continue
-        left = min(x_values)
-        right = max(x_values)
-        top = min(y_values)
-        bottom = max(y_values)
-
-        if parts:
-            parts.append(" ")
-            cursor += 1
-        start = cursor
-        parts.append(text)
-        cursor += len(text)
-
-        segments.append(
-            {
-                "start": start,
-                "end": cursor,
-                "left": left,
-                "top": top,
-                "width": max(1, right - left),
-                "height": max(1, bottom - top),
-            }
-        )
-
-    return segments, "".join(parts)
+    except Exception:
+        if paddle_any_succeeded:
+            return [], ""
+        raise RuntimeError(
+            "OCR unavailable for configured languages. Install PaddleOCR or Tesseract language packs and retry."
+        ) from paddle_error
 
 
 def _image_to_string_with_fallback(image) -> str:

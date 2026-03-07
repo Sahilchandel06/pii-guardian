@@ -466,6 +466,24 @@ nav {
   margin-bottom: 0;
 }
 
+.audit-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.audit-actions select {
+  min-width: 230px;
+  width: 230px;
+  padding: 8px 12px;
+}
+
+.audit-actions button {
+  min-width: 150px;
+  padding: 8px 16px;
+  white-space: nowrap;
+}
+
 /* ═══ NOTICES ═══ */
 
 .notice {

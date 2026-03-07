@@ -4,6 +4,7 @@ import { apiRequest } from "../lib/api";
 
 export default function AuditPanel({ logs, token, setNotice, setError }) {
   const [downloading, setDownloading] = useState(false);
+  const [backupDownloading, setBackupDownloading] = useState(false);
   const [downloadFormat, setDownloadFormat] = useState("jsonl");
 
   const downloadLogs = async () => {
@@ -32,11 +33,42 @@ export default function AuditPanel({ logs, token, setNotice, setError }) {
     }
   };
 
+  const downloadBackup = async () => {
+    try {
+      setBackupDownloading(true);
+      setError("");
+      const stepupPassword = window.prompt("Enter your password to confirm backup download:");
+      if (!stepupPassword) return;
+      const response = await apiRequest("/files/admin/backup-download", {
+        token,
+        headers: { "X-Stepup-Password": stepupPassword },
+      });
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const contentDisposition = response.headers.get("Content-Disposition") || "";
+      const match = contentDisposition.match(/filename=\"?([^\";]+)\"?/i);
+      const filename = match?.[1] || "pii_guardian_backup.zip";
+
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      setNotice("Backup download started.");
+    } catch (err) {
+      setError(err.message || "Failed to download backup.");
+    } finally {
+      setBackupDownloading(false);
+    }
+  };
+
   return (
     <section className="panel">
       <div className="audit-head">
         <h3>Audit Logs</h3>
-        <div style={{ display: "flex", gap: 8 }}>
+        <div className="audit-actions">
           <select
             value={downloadFormat}
             onChange={(event) => setDownloadFormat(event.target.value)}
@@ -48,6 +80,9 @@ export default function AuditPanel({ logs, token, setNotice, setError }) {
           </select>
           <button type="button" onClick={downloadLogs} disabled={downloading}>
           {downloading ? "Downloading..." : "Download Logs"}
+          </button>
+          <button type="button" onClick={downloadBackup} disabled={backupDownloading}>
+            {backupDownloading ? "Preparing Backup..." : "Download Backup ZIP"}
           </button>
         </div>
       </div>

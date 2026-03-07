@@ -21,6 +21,9 @@ def run_startup_migrations() -> None:
     _add_column_if_missing("files", "encryption_version VARCHAR(30) DEFAULT 'legacy_fernet'", "encryption_version")
     _add_column_if_missing("files", "file_sha256 VARCHAR(64)", "file_sha256")
     _add_column_if_missing("files", "cipher_sha256 VARCHAR(64)", "cipher_sha256")
+    _add_column_if_missing("files", "malware_scan_status VARCHAR(30) DEFAULT 'unknown'", "malware_scan_status")
+    _add_column_if_missing("files", "malware_scan_source VARCHAR(40) DEFAULT 'none'", "malware_scan_source")
+    _add_column_if_missing("files", "malware_scan_payload TEXT", "malware_scan_payload")
     _add_column_if_missing("files", "retention_expires_at TIMESTAMP", "retention_expires_at")
     _add_column_if_missing("files", "legal_hold BOOLEAN DEFAULT FALSE", "legal_hold")
 

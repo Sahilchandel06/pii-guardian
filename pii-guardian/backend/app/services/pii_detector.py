@@ -1,6 +1,7 @@
-﻿import json
+import json
 import os
 import re
+import unicodedata
 from collections import defaultdict
 from typing import Any
 
@@ -82,6 +83,13 @@ FALLBACK_PATTERNS: dict[str, re.Pattern[str]] = {
         r"\b\d{1,4}\s+[A-Za-z0-9 ,.-]*(Road|Rd|Street|St|Lane|Ln|Avenue|Ave|Nagar|Colony|Sector|Block)\b",
         re.IGNORECASE,
     ),
+    "IN_ADDRESS_INDIC": re.compile(
+        r"\b(?:\d{1,4}\s*)?(?:[^\n]{0,60})"
+        r"(?:रोड|सड़क|मार्ग|गली|मोहल्ला|नगर|कॉलोनी|सेक्टर|ब्लॉक|"
+        r"રોડ|માર્ગ|ગલી|નગર|કોલોની|સેક્ટર|બ્લોક)"
+        r"(?:[^\n]{0,60})\b",
+        re.IGNORECASE,
+    ),
     "IN_ADDRESS_LABELLED": re.compile(r"Address\s*[:\-]?\s*[^\n]{8,}", re.IGNORECASE),
     "PIN_CODE": re.compile(r"\b[0-9]{6}\b"),
     "UPI_ID": re.compile(
@@ -96,6 +104,30 @@ FALLBACK_PATTERNS: dict[str, re.Pattern[str]] = {
     "FINGERPRINT_TEMPLATE": re.compile(r"\bfp_hash_[a-zA-Z0-9]{6,}\b", re.IGNORECASE),
     "FACE_TEMPLATE": re.compile(r"\bface_tmp_[a-zA-Z0-9]{6,}\b", re.IGNORECASE),
     "BANK_NAME": re.compile(r"\b(?:HDFC|ICICI|SBI|AXIS|KOTAK|PNB|BOB|CANARA|IDFC)\s+Bank\b", re.IGNORECASE),
+    "PHONE_NUMBER_LABEL_HI_GU": re.compile(
+        r"\b(?:मोबाइल|फ़ोन|फोन|સંપર્ક|મોબાઇલ|ફોન)\s*[:\-]?\s*(?:\+?91[\s\-]?)?[6-9]\d{9}\b",
+        re.IGNORECASE,
+    ),
+    "IN_AADHAAR_LABEL_HI_GU": re.compile(
+        r"\b(?:आधार|આધાર)\s*[:\-]?\s*\d{4}[-\s]?\d{4}[-\s]?\d{4}\b",
+        re.IGNORECASE,
+    ),
+    "IN_PAN_LABEL_HI_GU": re.compile(
+        r"\b(?:पैन|પાન|PAN)\s*[:\-]?\s*[A-Z]{5}[0-9]{4}[A-Z]\b",
+        re.IGNORECASE,
+    ),
+    "DATE_OF_BIRTH_LABEL_HI_GU": re.compile(
+        r"\b(?:जन्म\s*तिथि|જન્મ\s*તારીખ)\s*[:\-]?\s*\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{4}\b",
+        re.IGNORECASE,
+    ),
+    "IN_ADDRESS_LABEL_HI_GU": re.compile(
+        r"\b(?:पता|સરનામું|સરનામુ)\s*[:\-]?\s*[^\n]{8,}",
+        re.IGNORECASE,
+    ),
+    "IN_ADDRESS_PIN_LABEL": re.compile(
+        r"\b(?:PIN|Pincode|पिन|पिनकोड|પિન|પિનકોડ)\s*[:\-]?\s*\d{6}\b",
+        re.IGNORECASE,
+    ),
 }
 
 PRESIDIO_ENTITY_MAP = {
@@ -113,8 +145,15 @@ PRESIDIO_ENTITY_MAP = {
 
 FALLBACK_ENTITY_MAP = {
     "IN_ADDRESS_LABELLED": "IN_ADDRESS",
+    "IN_ADDRESS_INDIC": "IN_ADDRESS",
     "PIN_CODE": "IN_ADDRESS",
     "DATE_OF_BIRTH_TEXT": "DATE_OF_BIRTH",
+    "PHONE_NUMBER_LABEL_HI_GU": "PHONE_NUMBER",
+    "IN_AADHAAR_LABEL_HI_GU": "IN_AADHAAR",
+    "IN_PAN_LABEL_HI_GU": "IN_PAN",
+    "DATE_OF_BIRTH_LABEL_HI_GU": "DATE_OF_BIRTH",
+    "IN_ADDRESS_LABEL_HI_GU": "IN_ADDRESS",
+    "IN_ADDRESS_PIN_LABEL": "IN_ADDRESS",
 }
 
 PII_WHITELIST = {
@@ -124,6 +163,7 @@ PII_WHITELIST = {
 PERSON_LABEL_STOPWORDS = {
     "face", "template", "device", "id", "bank", "account", "passport",
     "aadhaar", "pan", "ifsc", "fingerprint", "mobile", "email", "address", "dob", "ip",
+    "मोबाइल", "फोन", "आधार", "पता", "જન્મ", "સરનામું", "મોબાઇલ", "ફોન", "આધાર",
 }
 
 ENTITY_PRIORITY = {
@@ -178,7 +218,14 @@ def _valid_ipv4(value: str) -> bool:
 
 
 def _digits_only(value: str) -> str:
-    return re.sub(r"\D", "", value)
+    normalized: list[str] = []
+    for ch in value:
+        if ch.isdigit():
+            try:
+                normalized.append(str(unicodedata.digit(ch)))
+            except Exception:
+                normalized.append(ch)
+    return "".join(normalized)
 
 
 def _is_valid_verhoeff(number: str) -> bool:
@@ -477,3 +524,4 @@ def summarize_findings(findings: list[dict[str, Any]]) -> dict[str, int]:
     for item in findings:
         counts[item["entity_type"]] += 1
     return dict(counts)
+
