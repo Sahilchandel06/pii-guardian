@@ -84,9 +84,18 @@ export default function SanitizedHub({ token, files, setNotice, setError }) {
                 <td>{item.sanitization_mode}</td>
                 <td>{item.pii_count}</td>
                 <td className="action-cell">
-                  <button onClick={() => loadSanitizedPreview(item.id)}>Sanitized Preview</button>
-                  <button onClick={() => downloadSanitizedOriginal(item.id, item.filename)}>Download Safe (Original)</button>
-                  <button onClick={() => downloadSanitizedTxt(item.id, item.filename)}>Download Safe (TXT)</button>
+                  <button className="action-btn action-btn-preview" onClick={() => loadSanitizedPreview(item.id)}>
+                    Sanitized Preview
+                  </button>
+                  <button
+                    className="action-btn action-btn-safe"
+                    onClick={() => downloadSanitizedOriginal(item.id, item.filename)}
+                  >
+                    Safe (Original)
+                  </button>
+                  <button className="action-btn action-btn-safe" onClick={() => downloadSanitizedTxt(item.id, item.filename)}>
+                    Safe (TXT)
+                  </button>
                 </td>
               </tr>
             ))}

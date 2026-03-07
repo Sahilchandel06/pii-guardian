@@ -1,0 +1,498 @@
+﻿PII GUARDIAN - FULL PROJECT DOCUMENTATION
+Version: 1.0
+Date: 2026-03-07
+Repository Root: pii-guardian/
+
+============================================================
+1) PROJECT SUMMARY
+============================================================
+PII Guardian is an end-to-end privacy platform that detects, validates, and sanitizes sensitive data from structured and unstructured files. It supports role-based access control, secure encrypted storage, tamper-evident audit logs, malware reputation checks, risk analytics, and disaster-recovery backup export.
+
+Primary goal:
+- Prevent accidental leakage of personal/sensitive data.
+- Provide secure sharing of sanitized outputs.
+- Maintain auditability and compliance readiness.
+                    
+============================================================
+2) PROBLEM STATEMENT
+============================================================
+Organizations receive mixed file types (PDF scans, documents, CSV/SQL dumps, screenshots, etc.). Manual PII removal is:
+- slow,
+- inconsistent,
+- hard to verify,
+- non-auditable.
+
+PII Guardian automates the full lifecycle:
+Upload -> Detection -> Validation -> Sanitization -> Secure Download -> Audit -> Risk Visibility.
+
+============================================================
+3) KEY CAPABILITIES
+============================================================
+A) Multi-format ingestion
+- SQL, CSV, JSON, TXT
+- PDF (digital + scanned)
+- DOCX
+- PNG/JPG/JPEG images
+- Excel formats (XLS/XLSX/XLSM/XLTX/XLTM)
+
+B) Detection pipeline
+- Presidio Analyzer (NER + recognizers)
+- Regex fallback recognizers
+- Aadhaar checksum validation via Verhoeff
+- Card-like checksum validation via Luhn
+- Overlap resolution + entity priority logic
+- Optional LLM-assisted extraction (config-driven)
+
+C) OCR and non-text extraction
+- PaddleOCR primary engine
+- Tesseract fallback
+- QR/barcode decoding with pyzbar
+- Hindi + Gujarati OCR enabled via env config
+
+D) Sanitization modes
+- mask
+- redact
+- tokenize
+
+E) Security and trust
+- AES-GCM envelope encryption for originals at rest
+- SHA-256 integrity checks (ciphertext + plaintext)
+- Step-up password for sensitive downloads
+- Binary signature blocking for executable uploads
+- Optional VirusTotal hash reputation check with cache reuse
+- Rate limiting + CORS allowlist + security headers
+
+F) Governance and operations
+- RBAC (admin/user)
+- Tamper-evident audit logs (hash chain)
+- SIEM-friendly audit export: CSV/JSON/JSONL
+- Risk dashboard (overall, per-file, per-user, top entities)
+- Backup ZIP export (DB dump + encrypted originals + manifest)
+
+============================================================
+4) TECHNOLOGY STACK
+============================================================
+Backend:
+- FastAPI
+- SQLAlchemy
+- SQLite/PostgreSQL (configurable via DATABASE_URL)
+- Python services for parsing/detection/sanitization/security
+
+Frontend:
+- React + Vite
+- Component-based dashboard UI
+
+Important Python packages:
+- presidio-analyzer, presidio-anonymizer
+- paddleocr, paddlepaddle
+- PyMuPDF, pdfplumber, python-docx, openpyxl
+- Pillow, opencv-python
+- pyzbar
+- cryptography
+- python-jose, passlib
+
+============================================================
+5) HIGH-LEVEL ARCHITECTURE
+============================================================
+Frontend (React) calls FastAPI API.
+FastAPI coordinates:
+- Auth + RBAC
+- File ingestion and secure storage
+- Parsing/OCR/QR extraction
+- Detection + sanitization
+- Risk aggregation
+- Audit logging/export
+- Backup export
+
+Core data stores:
+- Database tables: users, files, audit_logs
+- Encrypted originals on disk: secure_storage/originals/*.enc
+
+Reference diagrams in repo:
+- pii-guardian/flow_diagram_v2.png
+- pii-guardian/architecture_diagram_v2.png
+- pii-guardian/docs/flow_diagram.png
+- pii-guardian/docs/architecture_diagram.png
+
+============================================================
+6) END-TO-END DATA FLOW
+============================================================
+1. User uploads file.
+2. API validates file type/size/signature.
+3. API computes SHA-256.
+4. Malware reputation check:
+   - First seen hash -> VirusTotal hash lookup (if enabled)
+   - Repeated hash -> reuses cached scan result from DB
+5. If malicious -> block upload + audit event.
+6. If allowed -> encrypt bytes with AES-GCM envelope.
+7. Store encrypted payload (.enc) + metadata in DB.
+8. On preview/download request -> decrypt and verify integrity.
+9. Parse/OCR/QR extract text.
+10. Detect and validate PII entities.
+11. Apply selected sanitization mode.
+12. Return sanitized output, update metadata/risk, write audit entries.
+
+============================================================
+7) DETECTION ENGINE DETAILS
+============================================================
+Primary module:
+- backend/app/services/pii_detector.py
+
+Detection sources:
+1) Presidio:
+   - PERSON, LOCATION, EMAIL_ADDRESS, PHONE_NUMBER, IP_ADDRESS
+   - plus custom recognizers for IN_PAN, IN_AADHAAR, IN_ADDRESS
+2) Regex fallback patterns for many entities.
+3) Optional LLM post-pass (disabled by default).
+
+Validation logic:
+- Aadhaar: 12-digit format + optional Verhoeff enforcement
+- Credit card-like: Luhn check
+- IP: IPv4 bounds validation
+- PAN/IFSC/Passport pattern strict checks
+- Debias filters for false PERSON_NAME hits
+
+Entity normalization and overlap handling:
+- Entity maps convert raw recognizer labels into project entities.
+- Priority table keeps strongest match when spans overlap.
+
+Detected entity families include:
+- EMAIL_ADDRESS
+- PHONE_NUMBER
+- IP_ADDRESS
+- IN_PAN
+- IN_AADHAAR
+- IN_VID
+- DATE_OF_BIRTH
+- PERSON_NAME
+- IN_ADDRESS
+- UPI_ID
+- CREDIT_CARD
+- PASSPORT_NUMBER
+- BANK_ACCOUNT
+- IFSC_CODE
+- BANK_NAME
+- DEVICE_ID
+- FINGERPRINT_TEMPLATE
+- FACE_TEMPLATE
+
+============================================================
+8) OCR, PDF, IMAGE, AND LANGUAGE SUPPORT
+============================================================
+Primary parser module:
+- backend/app/services/file_parser.py
+
+Capabilities:
+- Native text extraction for text-based files.
+- OCR for image-based PDFs/images via PaddleOCR.
+- Tesseract fallback if PaddleOCR unavailable.
+- QR/barcode decode via pyzbar to recover encoded identity data.
+
+Language support via env:
+- OCR_LANGS=en,hi,gu
+- OCR_TESS_LANGS=eng+hin+guj
+
+This provides Hindi and Gujarati support for OCR-based detection and masking/redaction.
+
+============================================================
+9) SANITIZATION SYSTEM
+============================================================
+Main module:
+- backend/app/services/sanitizer.py
+
+Modes:
+- mask: preserve context, hide sensitive parts
+- redact: aggressive replacement/blocking
+- tokenize: replace with deterministic/synthetic tokens
+
+Output options:
+- Sanitized preview
+- Sanitized TXT download
+- Sanitized original-format download (same file type extension)
+
+============================================================
+10) SECURITY MODEL (IMPORTANT FOR JUDGES)
+============================================================
+A) AES-GCM envelope encryption at rest
+Module:
+- backend/app/utils/storage_crypto.py
+
+How it works:
+1. Generate random per-file Data Encryption Key (DEK).
+2. Encrypt file bytes using AES-GCM with DEK + random nonce.
+3. Wrap (encrypt) DEK using master key (FILE_MASTER_KEY) and wrap nonce.
+4. Store payload as packed envelope:
+   - encrypted file bytes
+   - data nonce
+   - wrapped DEK
+   - wrap nonce
+5. Save encryption metadata + hashes in DB.
+
+Why this is strong:
+- Unique DEK per file reduces blast radius.
+- AES-GCM provides confidentiality + authenticity.
+- Master key rotation strategy can be layered later.
+
+B) Integrity verification
+- Ciphertext SHA-256 stored and checked before decrypt.
+- Plaintext SHA-256 checked after decrypt.
+- Prevents silent tampering/corruption.
+
+C) Access controls
+- JWT-based auth
+- RBAC for admin/user permissions
+- Step-up password for original downloads
+- Optional step-up for backup export
+
+D) Upload hardening
+- Max upload size enforcement
+- Supported-file allowlist
+- Executable signature block (MZ/ELF/Mach-O)
+
+E) Malware reputation check
+- Optional VirusTotal hash lookup
+- Cached by file hash to save API quota/tokens
+
+============================================================
+11) VIRUSTOTAL INTEGRATION
+============================================================
+Route module:
+- backend/app/routes/file_routes.py
+
+Flow:
+- Compute SHA-256 on upload.
+- If same hash scanned before, reuse cached malware result from latest DB record.
+- If not cached and VT enabled, query /api/v3/files/{sha256}.
+- If malicious/suspicious > 0, block upload.
+- Save scan status/source/payload in file record.
+
+Key env vars:
+- VIRUSTOTAL_ENABLED=true|false
+- VIRUSTOTAL_API_KEY=<your_key>
+- VIRUSTOTAL_TIMEOUT_SECONDS=12
+
+Notes:
+- Hash reputation checks known samples.
+- For unknown/new malware, hash-only checks can miss zero-day samples.
+- Production-grade setup can combine VT with local scanner (e.g., ClamAV sandbox scanning).
+
+============================================================
+12) AUDIT, INTEGRITY, AND SIEM EXPORT
+============================================================
+Audit module:
+- backend/app/services/audit_service.py
+- backend/app/routes/audit_routes.py
+
+Design:
+- Every sensitive action writes an audit event.
+- Logs are hash-chained:
+  - prev_hash references previous log hash
+  - log_hash computed on current log + prev_hash
+
+Benefits:
+- Tamper-evident timeline.
+- Integrity verification endpoint available.
+
+Exports:
+- CSV
+- JSON
+- JSONL (best for SIEM ingestion)
+
+============================================================
+13) RISK DASHBOARD
+============================================================
+Backend aggregation:
+- backend/app/routes/file_routes.py -> /files/risk-dashboard
+
+Frontend UI:
+- frontend/frontend/src/components/RiskPanel.jsx
+
+What is shown:
+- Overall risk score and level
+- Total PII and file count
+- Most exposed entity types
+- Per-file risk scores
+- Per-user risk (admin)
+- Visual enhancements (meter/distribution/top-risk bars)
+
+Risk scoring concept:
+- Entity-weighted score with saturation curve to 0..100
+- High-risk entities (e.g., Aadhaar/card/account) contribute more weight
+
+============================================================
+14) BACKUP / DISASTER RECOVERY
+============================================================
+Endpoint:
+- GET /files/admin/backup-download (admin)
+
+Backup ZIP includes:
+- database_dump.json
+- audit_logs.jsonl
+- config_snapshot.json
+- originals/ (encrypted original files as-is)
+- manifest.json with counts/checksums/missing paths
+
+Important:
+- Restore requires DB metadata + FILE_MASTER_KEY.
+- Originals are encrypted blobs, not plaintext.
+
+============================================================
+15) RBAC MODEL
+============================================================
+User role:
+- Upload and sanitize own files
+- Access shared sanitized catalog
+- Cannot access admin tabs or admin endpoints
+
+Admin role:
+- Full visibility
+- User management (list/change role)
+- Audit logs + integrity checks + export
+- Backup export
+- Deletion, legal hold, retention cleanup
+
+============================================================
+16) API SURFACE (QUICK LIST)
+============================================================
+Auth:
+- POST /auth/signup
+- POST /auth/login
+- GET /auth/me
+- GET /auth/users (admin)
+- PUT /auth/users/{user_id}/role (admin)
+
+Files:
+- POST /files/upload
+- GET /files
+- GET /files/sanitized-catalog
+- GET /files/search
+- GET /files/risk-dashboard
+- GET /files/{id}/raw-preview
+- GET /files/{id}/sanitized-preview
+- GET /files/{id}/download
+- GET /files/{id}/download-sanitized-original
+- GET /files/{id}/download-original
+- GET /files/admin/backup-download (admin)
+- POST /files/admin/cleanup-expired (admin)
+- POST /files/{id}/legal-hold (admin)
+- DELETE /files/{id} (admin)
+
+Audit:
+- GET /audit/logs (admin)
+- GET /audit/verify-integrity (admin)
+- GET /audit/logs/download?format=csv|json|jsonl (admin)
+
+============================================================
+17) IMPORTANT FILE MAP (WHERE CODE LIVES)
+============================================================
+Backend entry/startup:
+- backend/main.py
+
+DB + migrations:
+- backend/app/database/db.py
+- backend/app/database/migrations.py
+
+Models:
+- backend/app/models/user.py
+- backend/app/models/file.py
+- backend/app/models/audit.py
+
+Security + crypto:
+- backend/app/utils/security.py
+- backend/app/utils/storage_crypto.py
+
+Core services:
+- backend/app/services/file_parser.py
+- backend/app/services/pii_detector.py
+- backend/app/services/sanitizer.py
+- backend/app/services/audit_service.py
+
+Routes:
+- backend/app/routes/auth_routes.py
+- backend/app/routes/file_routes.py
+- backend/app/routes/audit_routes.py
+
+Frontend shell:
+- frontend/frontend/src/App.jsx
+- frontend/frontend/src/App.css
+
+Frontend components:
+- Upload: frontend/frontend/src/components/UploadPanel.jsx
+- Files center: frontend/frontend/src/components/FileCenter.jsx
+- Sanitized hub: frontend/frontend/src/components/SanitizedHub.jsx
+- Risk dashboard: frontend/frontend/src/components/RiskPanel.jsx
+- Audit panel: frontend/frontend/src/components/AuditPanel.jsx
+- Users admin: frontend/frontend/src/components/UsersPanel.jsx
+
+============================================================
+18) CONFIGURATION (.env)
+============================================================
+Template path:
+- backend/.env.example
+
+Critical keys:
+- DATABASE_URL
+- JWT_SECRET_KEY
+- FILE_MASTER_KEY (preferred)
+- CORS_ALLOW_ORIGINS
+- MAX_UPLOAD_MB
+- STEPUP_REQUIRED_FOR_RAW_DOWNLOAD
+- BACKUP_STEPUP_REQUIRED
+- OCR_LANGS / OCR_TESS_LANGS
+- VIRUSTOTAL_ENABLED / VIRUSTOTAL_API_KEY
+
+Recommendation:
+- In production, store secrets in secret manager, not plain .env.
+
+============================================================
+19) LOCAL RUN STEPS
+============================================================
+Backend:
+1. cd pii-guardian/backend
+2. python -m venv venv
+3. venv\Scripts\activate
+4. pip install -r requirements.txt
+5. copy .env.example .env
+6. python main.py
+
+Frontend:
+1. cd pii-guardian/frontend/frontend
+2. npm install
+3. npm run dev
+
+============================================================
+20) DEMO SCRIPT FOR JUDGES (5-7 MIN)
+============================================================
+1. Login as admin.
+2. Upload sample PDF/image containing PII.
+3. Show malware status and upload acceptance/block logic.
+4. Open sanitized preview and show detected entities.
+5. Download sanitized original-format output.
+6. Attempt original download -> show step-up password protection.
+7. Open Risk Dashboard -> explain visuals + top-risk files.
+8. Open Audit -> verify integrity and export JSONL for SIEM.
+9. Download backup ZIP and show manifest/checksums.
+
+============================================================
+21) CURRENT LIMITATIONS AND NEXT IMPROVEMENTS
+============================================================
+Limitations:
+- VirusTotal hash reputation may miss brand-new threats.
+- OCR accuracy depends on scan quality and language fonts.
+- Local disk encrypted storage is suitable for prototype/small deployment.
+
+High-impact roadmap:
+- S3 + KMS backend for encrypted originals at scale
+- Hybrid malware scanning (VT + sandbox/ClamAV)
+- Queued async processing for very large documents
+- DLP policy templates and approval workflow
+- SIEM webhook streaming and alert rules
+
+============================================================
+22) JUDGE TALK TRACK (SHORT PITCH)
+============================================================
+"PII Guardian secures the full lifecycle of sensitive documents. We do malware-aware ingestion, encrypted-at-rest original retention with AES-GCM envelope encryption, multilingual OCR + validated PII detection (Presidio/Regex/Verhoeff/Luhn/QR), on-demand sanitization in original formats, tamper-evident audit trails, and actionable risk analytics. It is built for compliance, incident response, and practical enterprise integration."
+
+============================================================
+END OF DOCUMENT
+============================================================

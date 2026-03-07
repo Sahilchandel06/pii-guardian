@@ -140,12 +140,29 @@ export default function FileCenter({ token, files, isAdmin, reloadFiles, onDelet
                 <td>{item.sanitization_mode}</td>
                 <td>{item.pii_count}</td>
                 <td className="action-cell">
-                  <button onClick={() => loadPreview(item.id, false)}>Sanitized</button>
-                  <button onClick={() => downloadSanitizedOriginal(item.id, item.filename)}>Download Safe (Original)</button>
-                  <button onClick={() => download(item.id, item.filename, false)}>Download Safe (TXT)</button>
-                  <button onClick={() => loadPreview(item.id, true)}>Original Preview</button>
-                  <button onClick={() => download(item.id, item.filename, true)}>Download Original</button>
-                  {isAdmin && <button onClick={() => deleteFile(item.id, item.filename)}>Delete</button>}
+                  <button className="action-btn action-btn-preview" onClick={() => loadPreview(item.id, false)}>
+                    Sanitized
+                  </button>
+                  <button
+                    className="action-btn action-btn-safe"
+                    onClick={() => downloadSanitizedOriginal(item.id, item.filename)}
+                  >
+                    Safe (Original)
+                  </button>
+                  <button className="action-btn action-btn-safe" onClick={() => download(item.id, item.filename, false)}>
+                    Safe (TXT)
+                  </button>
+                  <button className="action-btn action-btn-preview" onClick={() => loadPreview(item.id, true)}>
+                    Original Preview
+                  </button>
+                  <button className="action-btn action-btn-original" onClick={() => download(item.id, item.filename, true)}>
+                    Download Original
+                  </button>
+                  {isAdmin && (
+                    <button className="action-btn action-btn-danger" onClick={() => deleteFile(item.id, item.filename)}>
+                      Delete
+                    </button>
+                  )}
                 </td>
               </tr>
             ))}
