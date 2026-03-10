@@ -1,5 +1,6 @@
 import os
 import time
+import asyncio
 from collections import defaultdict, deque
 from pathlib import Path
 from threading import Lock
@@ -86,7 +87,11 @@ async def rate_limit_middleware(request: Request, call_next):
                 },
             )
         bucket.append(now)
-    response = await call_next(request)
+    try:
+        response = await call_next(request)
+    except asyncio.CancelledError:
+        # Client disconnected while a long-running request was in progress.
+        return JSONResponse(status_code=499, content={"detail": "Request cancelled by client"})
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"

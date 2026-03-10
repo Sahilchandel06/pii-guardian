@@ -31,8 +31,11 @@ def _mask_value(entity_type: str, value: str) -> str:
             return f"XX/XX/{year}"
         return "[MASKED_DOB]"
 
-    if entity_type == "IN_PAN" and len(value) == 10:
-        return f"{value[:2]}****{value[-2:]}"
+    if entity_type == "IN_PAN":
+        compact = re.sub(r"[^A-Za-z0-9]", "", value).upper()
+        if len(compact) == 10:
+            return f"{compact[:2]}****{compact[-2:]}"
+        return "[MASKED_PAN]"
 
     if entity_type == "IP_ADDRESS":
         parts = value.split(".")

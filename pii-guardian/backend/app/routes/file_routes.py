@@ -4,6 +4,7 @@ import mimetypes
 import os
 import uuid
 import math
+import hashlib
 import zipfile
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -34,6 +35,8 @@ router = APIRouter(prefix="/files", tags=["Files"])
 
 BASE_UPLOAD_DIR = Path("secure_storage")
 ORIGINAL_DIR = BASE_UPLOAD_DIR / "originals"
+SANITIZED_CACHE_DIR = BASE_UPLOAD_DIR / "sanitized_cache"
+SANITIZED_CACHE_VERSION = os.getenv("SANITIZED_CACHE_VERSION", "v2")
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "25"))
 MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
 ORIGINAL_RETENTION_DAYS = int(os.getenv("ORIGINAL_RETENTION_DAYS", "30"))
@@ -42,13 +45,16 @@ BACKUP_STEPUP_REQUIRED = os.getenv("BACKUP_STEPUP_REQUIRED", "true").lower() == 
 VIRUSTOTAL_API_KEY = os.getenv("VIRUSTOTAL_API_KEY", "").strip()
 VIRUSTOTAL_TIMEOUT_SECONDS = int(os.getenv("VIRUSTOTAL_TIMEOUT_SECONDS", "12"))
 VIRUSTOTAL_ENABLED = os.getenv("VIRUSTOTAL_ENABLED", "false").lower() == "true" and bool(VIRUSTOTAL_API_KEY)
+VIRUSTOTAL_BLOCK_UNKNOWN = os.getenv("VIRUSTOTAL_BLOCK_UNKNOWN", "false").lower() == "true"
 ORIGINAL_DIR.mkdir(parents=True, exist_ok=True)
+SANITIZED_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 BLOCKED_BINARY_SIGNATURES = (
     b"MZ",  # Windows PE executables
     b"\x7fELF",  # ELF binaries
     b"\xcf\xfa\xed\xfe",  # Mach-O (32-bit)
     b"\xfe\xed\xfa\xcf",  # Mach-O (64-bit)
 )
+EICAR_TEST_SIGNATURE = b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"
 RISK_ENTITY_WEIGHTS: dict[str, float] = {
     "IN_AADHAAR": 10.0,
     "CREDIT_CARD": 10.0,
@@ -135,7 +141,60 @@ def _read_original_verified(item: FileRecord) -> bytes:
     return plain
 
 
+def _cache_paths(item: FileRecord) -> tuple[Path, Path]:
+    mode = _effective_mode(item)
+    file_hash = item.file_sha256 or "nohash"
+    key_raw = f"{SANITIZED_CACHE_VERSION}:{item.id}:{mode}:{file_hash}:{item.filename}"
+    key = hashlib.sha256(key_raw.encode("utf-8")).hexdigest()[:24]
+    ext = Path(item.filename).suffix.lower() or ".bin"
+    payload_path = SANITIZED_CACHE_DIR / f"{item.id}_{key}.sanitized{ext}"
+    meta_path = SANITIZED_CACHE_DIR / f"{item.id}_{key}.meta.json"
+    return payload_path, meta_path
+
+
+def _try_read_cached_sanitized(item: FileRecord) -> dict | None:
+    payload_path, meta_path = _cache_paths(item)
+    if not (payload_path.exists() and meta_path.exists()):
+        return None
+    try:
+        payload_bytes = _read_bytes(str(payload_path))
+        meta = json.loads(_read_bytes(str(meta_path)).decode("utf-8"))
+        return {
+            "sanitized_text": str(meta.get("sanitized_text", "")),
+            "sanitized_original_bytes": payload_bytes,
+            "sanitized_original_ext": str(meta.get("sanitized_original_ext", Path(item.filename).suffix.lower() or ".txt")),
+            "sanitized_original_media_type": str(meta.get("sanitized_original_media_type", "application/octet-stream")),
+            "findings": meta.get("findings", []) or [],
+            "summary": meta.get("summary", {}) or {},
+            "parser": str(meta.get("parser", "cached")),
+        }
+    except Exception:
+        return None
+
+
+def _try_write_cached_sanitized(item: FileRecord, payload: dict) -> None:
+    payload_path, meta_path = _cache_paths(item)
+    try:
+        _save_bytes(payload_path, payload["sanitized_original_bytes"])
+        meta = {
+            "sanitized_text": payload.get("sanitized_text", ""),
+            "sanitized_original_ext": payload.get("sanitized_original_ext", Path(item.filename).suffix.lower() or ".txt"),
+            "sanitized_original_media_type": payload.get("sanitized_original_media_type", "application/octet-stream"),
+            "findings": payload.get("findings", []),
+            "summary": payload.get("summary", {}),
+            "parser": payload.get("parser", ""),
+        }
+        _save_bytes(meta_path, json.dumps(meta, ensure_ascii=False, default=str).encode("utf-8"))
+    except Exception:
+        # Cache is best-effort; request should still succeed.
+        return
+
+
 def _build_sanitized_payload(item: FileRecord) -> dict:
+    cached = _try_read_cached_sanitized(item)
+    if cached is not None:
+        return cached
+
     raw_bytes = _read_original_verified(item)
     mode = _effective_mode(item)
     try:
@@ -145,6 +204,7 @@ def _build_sanitized_payload(item: FileRecord) -> dict:
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Failed to sanitize file on-demand: {exc}",
         ) from exc
+    _try_write_cached_sanitized(item, payload)
     return payload
 
 
@@ -270,6 +330,10 @@ def _resolve_malware_scan_result(db: Session, file_sha256: str) -> dict:
     return _scan_with_virustotal_hash(file_sha256)
 
 
+def _is_eicar_test_file(raw_bytes: bytes) -> bool:
+    return EICAR_TEST_SIGNATURE in raw_bytes
+
+
 @router.post("/upload")
 async def upload_file(
     file: UploadFile = File(...),
@@ -300,18 +364,39 @@ async def upload_file(
                 detail="Executable binary uploads are blocked by security policy.",
             )
 
+    if _is_eicar_test_file(raw_bytes):
+        file_sha256 = sha256_hex(raw_bytes)
+        write_audit_log(
+            db,
+            current_user.id,
+            "MALWARE_BLOCK",
+            f"Blocked upload filename='{file.filename}' sha256={file_sha256} source=local_eicar_signature",
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Upload blocked: malware test signature detected (EICAR).",
+        )
+
     file_sha256 = sha256_hex(raw_bytes)
     malware_scan = _resolve_malware_scan_result(db, file_sha256)
-    if malware_scan["status"] == "malicious":
+    should_block = malware_scan["status"] == "malicious" or (
+        VIRUSTOTAL_BLOCK_UNKNOWN and malware_scan["status"] == "unknown"
+    )
+    if should_block:
         write_audit_log(
             db,
             current_user.id,
             "MALWARE_BLOCK",
             f"Blocked upload filename='{file.filename}' sha256={file_sha256} source={malware_scan.get('source')}",
         )
+        block_reason = (
+            "Upload blocked: file flagged as malicious by malware scan."
+            if malware_scan["status"] == "malicious"
+            else "Upload blocked: malware scan returned unknown and strict policy is enabled."
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Upload blocked: file flagged as malicious by malware scan.",
+            detail=block_reason,
         )
 
     ext = Path(file.filename).suffix.lower()

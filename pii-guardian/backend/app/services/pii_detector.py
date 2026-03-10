@@ -20,7 +20,7 @@ def _build_analyzer() -> AnalyzerEngine:
 
     pan_recognizer = PatternRecognizer(
         supported_entity="IN_PAN",
-        patterns=[Pattern("pan_pattern", r"\b[A-Z]{5}[0-9]{4}[A-Z]\b", 0.8)],
+        patterns=[Pattern("pan_pattern", r"\b[A-Za-z]{5}[0-9]{4}[A-Za-z]\b", 0.8)],
     )
     aadhaar_recognizer = PatternRecognizer(
         supported_entity="IN_AADHAAR",
@@ -60,7 +60,7 @@ FALLBACK_PATTERNS: dict[str, re.Pattern[str]] = {
     "EMAIL_ADDRESS": re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"),
     "PHONE_NUMBER": re.compile(r"\b(?:\+91[-\s]?)?[6-9]\d{9}\b"),
     "IP_ADDRESS": re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"),
-    "IN_PAN": re.compile(r"\b[A-Z]{5}[0-9]{4}[A-Z]\b"),
+    "IN_PAN": re.compile(r"\b[A-Za-z]{5}[0-9]{4}[A-Za-z]\b"),
     "IN_AADHAAR": re.compile(
         r"\b[0-9]{4}[-\s]?[0-9]{4}[-\s]?[0-9]{4}\b"
     ),
@@ -113,7 +113,7 @@ FALLBACK_PATTERNS: dict[str, re.Pattern[str]] = {
         re.IGNORECASE,
     ),
     "IN_PAN_LABEL_HI_GU": re.compile(
-        r"\b(?:पैन|પાન|PAN)\s*[:\-]?\s*[A-Z]{5}[0-9]{4}[A-Z]\b",
+        r"\b(?:पैन|પાન|PAN)\s*[:\-]?\s*[A-Za-z]{5}[0-9]{4}[A-Za-z]\b",
         re.IGNORECASE,
     ),
     "DATE_OF_BIRTH_LABEL_HI_GU": re.compile(
@@ -295,6 +295,11 @@ def _is_valid_finding(finding: dict[str, Any]) -> bool:
         if len(digits) != 12:
             return False
         if REQUIRE_AADHAAR_VERHOEFF and not _is_valid_aadhaar(value):
+            return False
+
+    if entity == "IN_PAN":
+        compact = re.sub(r"[^A-Za-z0-9]", "", value).upper()
+        if not re.fullmatch(r"[A-Za-z]{5}[0-9]{4}[A-Za-z]", compact):
             return False
 
     if entity == "BANK_ACCOUNT":
@@ -524,4 +529,6 @@ def summarize_findings(findings: list[dict[str, Any]]) -> dict[str, int]:
     for item in findings:
         counts[item["entity_type"]] += 1
     return dict(counts)
+
+
 
